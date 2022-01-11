@@ -1,0 +1,39 @@
+---
+title: "Reanalysis QC"
+author: "John Chamberlin"
+date: "1/4/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(Matrix)
+library(dplyr)
+library(readr)
+library(Seurat)
+library(ggplot2)
+```
+
+## Ensure that STARsolo result matches original data
+```{r quality_check}
+
+oriNucMat = read_rds("data/10X_nuclei_V3_AIBS/matrix_qc_only.RDS")
+nucGeneMat = read_rds("data/star/AIBS_snuc_V3/star_mats_qc_only.RDS")$inex
+
+all(colnames(oriNucMat) == colnames(nucGeneMat))
+cor(colSums(oriNucMat),colSums(nucGeneMat))
+
+sum(oriNucMat)/sum(nucGeneMat)
+# note that due to erroneous resequencing, the author data contain a higher total count of transcripts despite equivalent abundances
+
+sharedGenes = intersect(rownames(oriNucMat),rownames(nucGeneMat))
+oriExpr = rowMeans(NormalizeData(oriNucMat))[sharedGenes]
+starExpr = rowMeans(NormalizeData(nucGeneMat))[sharedGenes]
+ggplot(data = data.frame("STAR"=starExpr,
+                         "ori"=oriExpr),
+       aes(x=ori,y=STAR)) + geom_point() +
+  labs(x="Original expression",y="STAR expression")
+cor(oriExpr,starExpr)
+
+```

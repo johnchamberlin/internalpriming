@@ -1,0 +1,125 @@
+---
+title: "Bias analysis"
+author: "John Chamberlin"
+date: "1/4/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(Matrix)
+library(dplyr)
+library(readr)
+library(Seurat)
+```
+
+## Sampling bias in cells and nuclei
+Examine the extent of gene-level sampling bias in 10x RNA-seq data
+
+```{r prepare_data, echo=FALSE}
+
+nucMats = read_rds("data/star/AIBS_snuc_V3/star_mats_qc_only.RDS")
+
+# which genes have more exon than inex?
+nucMats$intron = with(nucMats, inex-exon)
+nucMats$intron = Matrix::drop0(nucMats$intron)
+nucMats$intron[nucMats$intron < 0] = 0
+nucMats$intron = Matrix::drop0(nucMats$intron)
+nucDf <- with(nucMats, 
+               data.frame("ensembl_gene_id" = row.names(inex),
+                     "inex_expr" = rowMeans(NormalizeData(inex)),
+                     "exon_expr" = rowMeans(NormalizeData(exon)),
+                     "inex_pdet" = rowMeans(inex > 0),
+                     "exon_pdet" = rowMeans(exon > 0),
+                     "inex_cpm" = rowMeans(NormalizeData(inex,
+                                                         normalization.method = "RC",
+                                                         scale.factor = 1E6)),
+                     "exon_cpm" = rowMeans(NormalizeData(exon,
+                                                         normalization.method = "RC",
+                                                         scale.factor = 1E6)),
+                     "intron_expr" = rowMeans(NormalizeData(intron)),
+                     "inex_tot" = rowSums(inex),
+                     "exon_tot" = rowSums(exon)))
+
+rm(nucMats)
+gc()
+
+
+cellMats = read_rds("data/star/AIBS_scell_V3/star_cellmats_qc_only.RDS")
+
+cellMats$intron = with(cellMats, inex-exon)
+cellMats$intron = Matrix::drop0(cellMats$intron)
+cellMats$intron = cellMats$intron * (cellMats$intron > 0)
+cellMats$intron = Matrix::drop0(cellMats$intron)
+gc()
+
+cellDf <- with(cellMats, 
+               data.frame("ensembl_gene_id" = row.names(inex),
+                     "inex_expr" = rowMeans(NormalizeData(inex)),
+                     "exon_expr" = rowMeans(NormalizeData(exon)),
+                     "inex_pdet" = rowMeans(inex > 0),
+                     "exon_pdet" = rowMeans(exon > 0),
+                     "inex_cpm" = rowMeans(NormalizeData(inex,
+                                                         normalization.method = "RC",
+                                                         scale.factor = 1E6)),
+                     "exon_cpm" = rowMeans(NormalizeData(exon,
+                                                         normalization.method = "RC",
+                                                         scale.factor = 1E6)),
+                     "intron_expr" = rowMeans(NormalizeData(intron)),
+                     "inex_tot" = rowSums(inex),
+                     "exon_tot" = rowSums(exon)))
+rm(cellMats)
+gc()
+
+bcAnnot = data.table::fread("data/meta_brainatlas/cluster.annotation.cell.nuc.csv")
+bcAnnot = oriAnnot %>% filter(class_label != "Low Quality")
+
+# gene features from ensembl, plus internal priming motif counts
+geneAnnot <- fread("refdata/mm10_genes_features_ipms.csv")
+
+with(geneAnnot %>% select(gene_length, ipms) %>% distinct(), cor.test(gene_length, ipms)) # R = .95
+
+# consider only protein coding isoforms for pcg, and lncRNA isoforms for lncRNA
+geneAnnotSums = geneAnnot %>% group_by(ensembl_gene_id) %>% 
+  filter((gene_biotype == "protein_coding" & transcript_biotype == "protein_coding") | 
+                                        (gene_biotype == "lncRNA" & transcript_biotype == "lncRNA") |
+                                        !(gene_biotype %in% c("protein_coding","lncRNA"))) %>%
+  summarise(longest_tx = max(transcript_length),
+            longest_tx_genomic = max(transcript_genomic_length),
+            median_n_exons = median(tx_n_exons))
+geneAnnot = geneAnnot %>% left_join(geneAnnotSums) %>%
+  select(ensembl_gene_id, mgi_symbol, gene_biotype, gene_length, ipms, longest_tx, longest_tx_genomic, median_n_exons) %>%
+  distinct()
+
+
+
+# intron feature lengths
+intron = fread("refdata/introns.mm99f.bed")
+intron = intron[,1:4]
+colnames(intron) = c("chr", "intron_start","intron_end","ensembl_gene_id")
+
+intron = intron %>% group_by(ensembl_gene_id) %>% 
+  summarise(intron_tl = sum(intron_end - intron_start + 1))
+
+geneAnnot = geneAnnot %>% left_join(intron) %>% distinct()
+geneAnnot$intron_tl[is.na(geneAnnot$intron_tl)] = 0
+geneAnnot$gene_pct_intron = with(geneAnnot, intron_tl/gene_length*100)
+
+
+
+```
+
+## Features contributing to inex vs exon discrepancy
+Sampling rate of transcripts depends on priming sites, time spent in nucleus, etc
+
+```{r bias}
+
+nucDf = nucDf %>% left_join(geneAnnot)
+cellDf = cellDf %>% left_join(geneAnnot)
+
+
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

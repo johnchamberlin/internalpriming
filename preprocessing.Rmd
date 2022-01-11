@@ -1,0 +1,119 @@
+---
+title: "prepare data"
+author: "John Chamberlin"
+date: "1/4/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(Matrix)
+library(dplyr)
+library(readr)
+library(Seurat)
+
+```
+
+## Import author datasets
+
+
+```{r author_data}
+
+# author single cell matrix (AIBS V3 scRNA-seq)
+oriCellMat <- readMM("data/10X_cells_V3_AIBS/matrix.mtx")
+qcc = fread("data/10X_cells_V3_AIBS/QC.csv",h=T)$x
+colnames(oriCellMat) <- fread("data/10X_cells_V3_AIBS/barcode.tsv", h=T)$x
+rownames(oriCellMat) <- fread("data/10X_cells_V3_AIBS/features.tsv",h=F)$V1
+oriCellMat = oriCellMat[,qcc]
+
+write_rds(oriCellMat,"data/10X_cells_V3_AIBS/ori_cell_matrix_qc_only.RDS",compress = "gz")
+rm(oriCellMat)
+
+# author single nucleus matrix
+oriNucMat <- readMM("data/10X_nuclei_V3_AIBS/matrix.mtx")
+qcn = fread("data/10X_nuclei_V3_AIBS/QC.csv",h=T)$x
+colnames(oriNucMat) <- fread("data/10X_nuclei_V3_AIBS/barcode.tsv", h=T)$x
+rownames(oriNucMat) <- fread("data/10X_nuclei_V3_AIBS/features.tsv",h=F)$V1
+oriNucMat = oriNucMat[,qcn]
+#write_rds(oriNucMat,"data/10X_nuclei_V3_AIBS/ori_nuc_matrix_qc_only.RDS",compress = "gz")
+#rm(oriNucMat)
+
+# Part 0.C. Compile author cel type annotations
+
+oriAnnotCell <- fread("data/10X_cells_V3_AIBS/cluster.annotation.csv") %>% 
+  left_join(fread("data/10X_cells_V3_AIBS/cluster.membership.csv"), by = c("cluster_id"="x")) %>%
+  rename(barcode=V1) %>% mutate(tech="cells")
+oriAnnotNuc <- fread("data/10X_nuclei_V3_AIBS/cluster.annotation.csv") %>% 
+  left_join(fread("data/10X_nuclei_V3_AIBS/cluster.membership.csv"), by = c("cluster_id"="x")) %>%
+  rename(barcode=V1) %>% mutate(tech="nuclei")
+
+oriAnnot <- rbind(oriAnnotCell, oriAnnotNuc)
+#rm(oriAnnotCell);rm(oriAnnotNuc)
+
+#fwrite(oriAnnot, file = "data/meta_brainatlas/cluster.annotation.cell.nuc.csv")
+```
+
+## Prepare STAR matrices (reanalysis)
+
+```{r wrangle_star}
+# the same gene and barcode whitelist for every sample, just import once:
+starGenes = fread("data/star/AIBS_snuc_V3/nuc_A02/nuc_A02_Solo.out/GeneFull/raw/features.tsv",h=F)$V1
+starBarcodes = fread("data/star/AIBS_snuc_V3/nuc_A02/nuc_A02_Solo.out/GeneFull/raw/barcodes.tsv",h=F)$V1
+
+nucLabels = data.frame("name" = c("A02","B02","C02","D02","H01"),
+                       "suffix" = c("-1L8TX_181211_01_A02",
+                                    "-2L8TX_181211_01_B02",
+                                    "-3L8TX_181211_01_C02",
+                                    "-4L8TX_181211_01_D02",
+                                    "-5L8TX_181211_01_H01"))
+
+cellLabels = data.frame("name" = c("G12","H12","A01","B01","C01","D01",
+                                   "E01","F01","A08","B08","F08","G08"),
+                        "suffix" = c("-1L8TX_181211_01_G12",
+                                     "-2L8TX_181211_01_H12",
+                                     "-3L8TX_181211_01_A01",
+                                     "-4L8TX_181211_01_B01",
+                                     "-5L8TX_181211_01_C01",
+                                     "-6L8TX_181211_01_D01",
+                                     "-7L8TX_181211_01_E01",
+                                     "-8L8TX_181211_01_F01",
+                                     "-9L8TX_190430_01_A08",
+                                     "-10L8TX_190430_01_B08",
+                                     "-11L8TX_190430_01_F08",
+                                     "-12L8TX_190430_01_G08"))
+
+wrangleStar = function(name,suffix,quant){
+  exonMat = readMM(sprintf("data/star/AIBS_snuc_V3/nuc_%s/nuc_%s_Solo.out/%s/raw/matrix.mtx",name,name,quant))
+  colnames(exonMat) = paste0(starBarcodes,suffix)
+  exonMat = exonMat[,intersect(colnames(exonMat),qcn)]
+  return(exonMat)
+}
+
+nucGeneMat = do.call(cbind,apply(nucLabels,1,function(x,quant) wrangleStar(x[1],x[2],"GeneFull")))
+nucExonMat = do.call(cbind,apply(nucLabels,1,function(x,quant) wrangleStar(x[1],x[2],"Gene")))
+
+#cellGeneMat = do.call(cbind,apply(cellLabels,1,function(x,quant) wrangleStar(x[1],x[2],"GeneFull")))
+#cellExonMat = do.call(cbind,apply(cellLabels,1,function(x,quant) wrangleStar(x[1],x[2],"Gene")))
+
+rownames(nucGeneMat) = starGenes
+rownames(nucExonMat) = starGenes
+#rownames(cellGeneMat) = starGenes
+#rownames(cellExonMat) = starGenes
+
+nucIntronMat = nucGeneMat - nucExonMat
+nucIntronMat = Matrix::drop0(nucIntronMat)
+nucIntronMat = nucIntronMat * (nucIntronMat > 0)
+nucIntronMat = Matrix::drop0(nucIntronMat)
+
+#readr::write_rds(list("inex"=nucGeneMat,"exon"=nucExonMat,"intron"=nucIntronMat),
+#                 "data/star/AIBS_snuc_V3/star_mats_qc_only.RDS")
+
+#readr::write_rds(list("inex"= cellGeneMat,"exon"=cellExonMat),
+#"data/star/AIBS_cells_V3/star_cellmats_qc_only.RDS")
+
+
+```
+
+
+
