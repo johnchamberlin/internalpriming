@@ -7,119 +7,683 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(data.table)
+
+options(scipen = 2)
 library(Matrix)
 library(dplyr)
 library(readr)
 library(Seurat)
-```
-
-## Sampling bias in cells and nuclei
-Examine the extent of gene-level sampling bias in 10x RNA-seq data
-
-```{r prepare_data, echo=FALSE}
-
-nucMats = read_rds("data/star/AIBS_snuc_V3/star_mats_qc_only.RDS")
-
-# which genes have more exon than inex?
-nucMats$intron = with(nucMats, inex-exon)
-nucMats$intron = Matrix::drop0(nucMats$intron)
-nucMats$intron[nucMats$intron < 0] = 0
-nucMats$intron = Matrix::drop0(nucMats$intron)
-nucDf <- with(nucMats, 
-               data.frame("ensembl_gene_id" = row.names(inex),
-                     "inex_expr" = rowMeans(NormalizeData(inex)),
-                     "exon_expr" = rowMeans(NormalizeData(exon)),
-                     "inex_pdet" = rowMeans(inex > 0),
-                     "exon_pdet" = rowMeans(exon > 0),
-                     "inex_cpm" = rowMeans(NormalizeData(inex,
-                                                         normalization.method = "RC",
-                                                         scale.factor = 1E6)),
-                     "exon_cpm" = rowMeans(NormalizeData(exon,
-                                                         normalization.method = "RC",
-                                                         scale.factor = 1E6)),
-                     "intron_expr" = rowMeans(NormalizeData(intron)),
-                     "inex_tot" = rowSums(inex),
-                     "exon_tot" = rowSums(exon)))
-
-rm(nucMats)
-gc()
+library(tidyr)
+library(ggplot2)
 
 
-cellMats = read_rds("data/star/AIBS_scell_V3/star_cellmats_qc_only.RDS")
+### ggplot formatting
+fig_theme = theme(text = element_text(family = "Arial",
+                                      size = 14))
+theme_set(fig_theme)
+###
 
-cellMats$intron = with(cellMats, inex-exon)
-cellMats$intron = Matrix::drop0(cellMats$intron)
-cellMats$intron = cellMats$intron * (cellMats$intron > 0)
-cellMats$intron = Matrix::drop0(cellMats$intron)
-gc()
-
-cellDf <- with(cellMats, 
-               data.frame("ensembl_gene_id" = row.names(inex),
-                     "inex_expr" = rowMeans(NormalizeData(inex)),
-                     "exon_expr" = rowMeans(NormalizeData(exon)),
-                     "inex_pdet" = rowMeans(inex > 0),
-                     "exon_pdet" = rowMeans(exon > 0),
-                     "inex_cpm" = rowMeans(NormalizeData(inex,
-                                                         normalization.method = "RC",
-                                                         scale.factor = 1E6)),
-                     "exon_cpm" = rowMeans(NormalizeData(exon,
-                                                         normalization.method = "RC",
-                                                         scale.factor = 1E6)),
-                     "intron_expr" = rowMeans(NormalizeData(intron)),
-                     "inex_tot" = rowSums(inex),
-                     "exon_tot" = rowSums(exon)))
-rm(cellMats)
-gc()
-
-bcAnnot = data.table::fread("data/meta_brainatlas/cluster.annotation.cell.nuc.csv")
-bcAnnot = oriAnnot %>% filter(class_label != "Low Quality")
-
-# gene features from ensembl, plus internal priming motif counts
-geneAnnot <- fread("refdata/mm10_genes_features_ipms.csv")
-
-with(geneAnnot %>% select(gene_length, ipms) %>% distinct(), cor.test(gene_length, ipms)) # R = .95
-
-# consider only protein coding isoforms for pcg, and lncRNA isoforms for lncRNA
-geneAnnotSums = geneAnnot %>% group_by(ensembl_gene_id) %>% 
-  filter((gene_biotype == "protein_coding" & transcript_biotype == "protein_coding") | 
-                                        (gene_biotype == "lncRNA" & transcript_biotype == "lncRNA") |
-                                        !(gene_biotype %in% c("protein_coding","lncRNA"))) %>%
-  summarise(longest_tx = max(transcript_length),
-            longest_tx_genomic = max(transcript_genomic_length),
-            median_n_exons = median(tx_n_exons))
-geneAnnot = geneAnnot %>% left_join(geneAnnotSums) %>%
-  select(ensembl_gene_id, mgi_symbol, gene_biotype, gene_length, ipms, longest_tx, longest_tx_genomic, median_n_exons) %>%
-  distinct()
+oriAnnot = data.table::fread("data/meta_brainatlas/cluster.annotation.cell.nuc.csv")
+oriAnnot = oriAnnot %>% filter(class_label != "Low Quality")
 
 
 
-# intron feature lengths
-intron = fread("refdata/introns.mm99f.bed")
+geneAnnot = data.table::fread("refdata/mm10_genes_features_ipms.csv") %>%
+    dplyr::select(ensembl_gene_id, gene_length, ipms, gene_biotype) %>% distinct()
+
+intron = data.table::fread("refdata/introns.mm99f.bed")
 intron = intron[,1:4]
 colnames(intron) = c("chr", "intron_start","intron_end","ensembl_gene_id")
 
 intron = intron %>% group_by(ensembl_gene_id) %>% 
   summarise(intron_tl = sum(intron_end - intron_start + 1))
 
-geneAnnot = geneAnnot %>% left_join(intron) %>% distinct()
-geneAnnot$intron_tl[is.na(geneAnnot$intron_tl)] = 0
-geneAnnot$gene_pct_intron = with(geneAnnot, intron_tl/gene_length*100)
-
-
+geneAnnot = geneAnnot %>% left_join(intron) %>% mutate(intron_tl = ifelse(is.na(intron_tl),0,intron_tl),
+                                                       gene_pct_intron = intron_tl/gene_length)
 
 ```
 
-## Features contributing to inex vs exon discrepancy
-Sampling rate of transcripts depends on priming sites, time spent in nucleus, etc
+## Sampling bias in cells and nuclei
+Examine the extent of gene-level sampling bias in 10x RNA-seq data
 
-```{r bias}
+```{r prepare_data, echo=FALSE}
+# if we already prepared the data, dont' do it again
+if(!(file.exists("data/meta_brainatlas/aibs_expression.tsv"))){
+  nucMats = read_rds("data/star/AIBS_snuc_V3/all_nuc_mats_5.rds")[c("inex","exon","intron")]
+  
+  geneAnnot = geneAnnot[match(rownames(nucMats$exon),geneAnnot$ensembl_gene_id),]
+  scalar027 = geneAnnot$gene_length/1000*.027
+  names(scalar027) = geneAnnot$ensembl_gene_id
+  all(rownames(nucMats$inex) == names(scalar027))
+  
+  
+  nucMats$scaled_A15 = nucMats$exon + nucMats$intron/scalar027
+    
+  nucDf <- with(nucMats, 
+                 data.frame("ensembl_gene_id" = row.names(inex),
+                       "inex_expr" = rowMeans(NormalizeData(inex)),
+                       "exon_expr" = rowMeans(NormalizeData(exon)),
+                       "inex_pdet" = rowMeans(inex > 0),
+                       "exon_pdet" = rowMeans(exon > 0),
+                       "inex_cpm" = rowMeans(NormalizeData(inex,
+                                                           normalization.method = "RC",
+                                                           scale.factor = 1E6)),
+                       "exon_cpm" = rowMeans(NormalizeData(exon,
+                                                           normalization.method = "RC",                                                            scale.factor = 1E6)),
+                       "intron_expr" = rowMeans(NormalizeData(intron)),
+                       "intron_pdet" = rowMeans(intron > 0),
+                       "intron_cpm" = rowMeans(NormalizeData(intron,
+                                                             normalization.method = "RC",                                                            scale.factor = 1E6)),
+                       "intron_tot" = rowSums(intron),
+                       "inex_tot" = rowSums(inex),
+                       "exon_tot" = rowSums(exon),
+                       "scaled_tot" = rowSums(scaled_A15),
+                       "scaled_A15_cpm" = rowMeans(NormalizeData(scaled_A15, 
+                                                                 normalization.method = "RC",                                                            scale.factor = 1E6))))
+  
+    
+  rm(nucMats) # unless we need them for something else later
+  gc()
+  
+  cellMats = read_rds("data/star/AIBS_scell_V3/all_cell_mats_5.rds")
+  all(rownames(cellMats$inex) == geneAnnot$ensembl_gene_id)
+  cellMats$scaled_A15 = with(cellMats, exon + intron/scalar027)
+  
+  cellDf <- with(cellMats, 
+                 data.frame("ensembl_gene_id" = row.names(inex),
+                       "inex_expr" = rowMeans(NormalizeData(inex)),
+                       "exon_expr" = rowMeans(NormalizeData(exon)),
+                       "inex_pdet" = rowMeans(inex > 0),
+                       "exon_pdet" = rowMeans(exon > 0),
+                       "inex_cpm" = rowMeans(NormalizeData(inex,
+                                                           normalization.method = "RC",                                                            scale.factor = 1E6)),
+                       "exon_cpm" = rowMeans(NormalizeData(exon,
+                                                           normalization.method = "RC",                                                            scale.factor = 1E6)),
+                       "intron_expr" = rowMeans(NormalizeData(intron)),
+                       "intron_cpm" = rowMeans(NormalizeData(intron,
+                                                             normalization.method = "RC",                                                            scale.factor = 1E6)),
+                       "intron_tot" = rowSums(intron),
+                       "intron_pdet" = rowMeans(intron > 0),
+                       "inex_tot" = rowSums(inex),
+                       "exon_tot" = rowSums(exon),
+                       "scaled_tot" = rowSums(scaled_A15),
+                       "scaled_A15_cpm" = rowMeans(NormalizeData(scaled_A15, 
+                                                                 normalization.method = "RC",                                                            scale.factor = 1E6))))
 
-nucDf = nucDf %>% left_join(geneAnnot)
-cellDf = cellDf %>% left_join(geneAnnot)
+  #lapply(cellMats, sum)
+  rm(cellMats)
+  gc()
+  aibs = full_join(nucDf, cellDf, by="ensembl_gene_id", suffix = c(".nuc",".cell"))
+  aibs = aibs %>% left_join(geneAnnot)
+  data.table::fwrite(aibs, file = "data/meta_brainatlas/aibs_expression.tsv",sep = "\t")
+}
 
+aibs = data.table::fread("data/meta_brainatlas/aibs_expression.tsv")
+geneAnnot = geneAnnot[match(aibs$ensembl_gene_id,geneAnnot$ensembl_gene_id),]
 
+if(!file.exists("data/meta_brainatlas/barcodes_annotated.tsv")){
+  bcAnnot = oriAnnot
+  nucMats = read_rds("data/star/AIBS_snuc_V3/all_nuc_mats_5.rds")[c("intron","inex")]
+  cellMats = read_rds("data/star/AIBS_scell_V3/all_cell_mats_5.rds")[c("intron","inex")]
+
+  intFrac = c(colSums(nucMats$intron)/colSums(nucMats$inex),
+              colSums(cellMats$intron)/colSums(cellMats$inex))
+  bcAnnot$intron_count_frac = intFrac[bcAnnot$barcode]
+  data.table::fwrite(bcAnnot, "data/meta_brainatlas/barcodes_annotated.tsv",sep="\t")
+} else{
+  bcAnnot = data.table::fread("data/meta_brainatlas/barcodes_annotated.tsv")
+  sharedIdents = intersect(bcAnnot$subclass_label[bcAnnot$tech == "nuclei"],
+                         bcAnnot$subclass_label[bcAnnot$tech == "cells"])
+}
 
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r results1}
+# correlations
+
+# figure 2A: Inex bias is stronger in nuclei, but intron bias is identical
+with(aibs %>% filter(inex_cpm.cell > 10), cor.test(log(inex_cpm.cell), log(gene_length)))
+with(aibs %>% filter(inex_cpm.nuc > 10), cor.test(log(inex_cpm.nuc), log(gene_length)))
+
+with(aibs %>% filter(intron_cpm.cell > 10), cor.test(log(intron_cpm.cell), log(gene_length)))
+with(aibs %>% filter(intron_cpm.nuc > 10), cor.test(log(intron_cpm.nuc), log(gene_length)))
+
+# make expression data long format and filter out genes with negligible expression
+aibs_long_filtered = aibs %>% 
+  pivot_longer(cols = c(exon_cpm.nuc, exon_cpm.cell, inex_cpm.nuc, 
+                        inex_cpm.cell, intron_cpm.nuc, intron_cpm.cell), 
+               values_to = "cpm", 
+               names_to = c("quant","assay"), 
+               names_sep = "\\.") %>% 
+  dplyr::select(ensembl_gene_id, cpm, quant, assay, gene_length) %>% 
+  mutate(quant = gsub("_cpm","",quant))
+
+plot_glbias = ggplot(aibs_long_filtered %>%
+                            filter(cpm > 1 & quant != "exon") %>%
+                            mutate(bin_gene_length = factor(ntile(gene_length, 4)),
+                                   quant = recode(quant, 
+                                                  inex = "Intron&Exon", 
+                                                  intron ="Intron"),
+                                   assay = recode(assay, cell = "Cells",nuc = "Nuclei")),
+       aes(x = bin_gene_length, y = log10(cpm), fill = assay)) +
+  geom_boxplot() + theme_minimal() +  
+  labs(y = "Log10 abundance",
+       x = "Gene length quartile",
+       fill = "Assay") +
+  facet_wrap(~factor(quant, levels = c("Intron&Exon","Intron"))) +
+  ylim(0,4.5) + scale_fill_manual(values = c("gray","orange"))
+
+
+plot_glbias
+
+# intron fractino vs gene length bin
+
+# ggplot(aibs %>% filter(inex_cpm.cell > 1 & inex_cpm.nuc > 1) %>%
+#          mutate(bin_gene_length = factor(ntile(gene_length, 8))), aes(x = bin_gene_length, y = gene_pct_intron)) + 
+#   geom_boxplot()
+
+
+# conceptual figure
+
+ggplot(bcAnnot %>% group_by(tech) %>% summarise(int = median(intron_count_frac),
+                                                ex = 1-int) %>% 
+         pivot_longer(cols = c(int,ex), names_to = "feature", values_to = "frac"),
+       aes(y = frac, x = tech, fill = feature)) + geom_bar(position = "stack",
+                                                           stat = "identity") + 
+  theme_minimal() + scale_fill_manual(values = c("gray","orange")) + theme(text = element_text(size = 22)) +
+  labs(y = "", x ="")
+
+scaled_feat_tot = data.frame("total" = t(aibs %>% 
+  summarise(cell_exon = sum(exon_tot.cell), nuc_exon = sum(exon_tot.nuc), nuc_intron = sum(intron_tot.nuc), cell_intron = sum(intron_tot.cell), cell_scaledintron = sum(scaled_tot.cell)-sum(exon_tot.cell), nuc_scaledintron = sum(scaled_tot.nuc)-sum(exon_tot.nuc))))
+
+scaled_feat_tot = scaled_feat_tot %>% mutate("assay" = unlist(lapply(strsplit(row.names(scaled_feat_tot),"_"),`[`,1)),
+                                             "quant" = unlist(lapply(strsplit(row.names(scaled_feat_tot),"_"),`[`,2)))
+                                             
+ggplot(scaled_feat_tot %>% filter(quant != "scaledintron"), aes(x = assay, y = total, fill = quant)) + geom_col()
+
+ggplot(scaled_feat_tot %>% filter(quant != "intron"), aes(x = assay, y = total, fill = quant)) + geom_col()
+
+```
+
+
+```{r results2}
+
+# cell type expression isntead of sample wide
+if(!file.exists("data/meta_brainatlas/aibs_celltype_expression.rds")){
+  cellMats = read_rds("data/star/AIBS_scell_V3/all_cell_mats_5.rds")[c("exon","intron","inex")]
+  cellMats$scaled_A15 = with(cellMats, exon + intron/scalar027)
+  scalarFloor = scalar027
+  scalarFloor[scalarFloor < 1] =1
+  cellMats$floor_A15 = with(cellMats, exon + intron/scalarFloor)
+  
+  nucMats = read_rds("data/star/AIBS_snuc_V3/all_nuc_mats_5.rds")[c("exon","intron","inex")]
+  nucMats$scaled_A15 = with(nucMats, exon + intron/scalar027)
+  nucMats$floor_A15 = with(nucMats, exon + intron/scalarFloor)
+  # cell type specific correlations
+  cellTypeInex = data.frame("ensembl_gene_id" = rownames(cellMats$inex))
+  cellTypeA15 = data.frame("ensembl_gene_id" = rownames(cellMats$inex))
+  cellTypeExon = data.frame("ensembl_gene_id" = rownames(cellMats$exon))
+  cellTypeIntron = data.frame("ensembl_gene_id" = rownames(cellMats$intron))
+  cellTypeFloor = data.frame("ensembl_gene_id" = rownames(cellMats$floor_A15))
+  
+  for(celltype in sharedIdents){
+    nbc = (bcAnnot %>% filter(subclass_label == celltype & tech == "nuclei"))$barcode
+    cbc = (bcAnnot %>% filter(subclass_label == celltype & tech == "cells"))$barcode
+    
+    nucAb = rowMeans(NormalizeData(nucMats$inex[,nbc],
+                                   normalization.method = "RC",                                                            scale.factor = 1E6))
+    cellAb = rowMeans(NormalizeData(cellMats$inex[,cbc],
+                                    normalization.method = "RC",                                                            scale.factor = 1E6))
+  
+    cellTypeInex = cellTypeInex %>% mutate("{celltype}_nuc" := nucAb)
+    cellTypeInex = cellTypeInex %>% mutate("{celltype}_cell" := cellAb)
+  
+    nucAbSc = rowMeans(NormalizeData(nucMats$scaled_A15[,nbc],
+                                   normalization.method = "RC",                                                            scale.factor = 1E6))
+    cellAbSc = rowMeans(NormalizeData(cellMats$scaled_A15[,cbc],
+                                    normalization.method = "RC",                                                            scale.factor = 1E6))
+    cellTypeA15 = cellTypeA15 %>% mutate("{celltype}_nuc" := nucAbSc)
+    cellTypeA15 = cellTypeA15 %>% mutate("{celltype}_cell" := cellAbSc)
+  
+  
+    # exon
+    nucAbEx = rowMeans(NormalizeData(nucMats$exon[,nbc],
+                                   normalization.method = "RC",                                                            scale.factor = 1E6))
+    cellAbEx = rowMeans(NormalizeData(cellMats$exon[,cbc],
+                                    normalization.method = "RC",                                                            scale.factor = 1E6))
+    cellTypeExon = cellTypeExon %>% mutate("{celltype}_nuc" := nucAbEx)
+    cellTypeExon = cellTypeExon %>% mutate("{celltype}_cell" := cellAbEx)
+  
+    nucAbIn = rowMeans(NormalizeData(nucMats$intron[,nbc],
+                                   normalization.method = "RC",                                                            scale.factor = 1E6))
+    cellAbIn = rowMeans(NormalizeData(cellMats$intron[,cbc],
+                                    normalization.method = "RC",                                                            scale.factor = 1E6))
+    cellTypeIntron = cellTypeIntron %>% mutate("{celltype}_nuc" := nucAbIn)
+    cellTypeIntron = cellTypeIntron %>% mutate("{celltype}_cell" := cellAbIn)
+    
+    # floored
+    nucAbFl = rowMeans(NormalizeData(nucMats$floor_A15[,nbc],
+                                   normalization.method = "RC",                                                            scale.factor = 1E6))
+    cellAbFl = rowMeans(NormalizeData(cellMats$floor_A15[,cbc],
+                                    normalization.method = "RC",                                                            scale.factor = 1E6))
+    cellTypeFloor = cellTypeFloor %>% mutate("{celltype}_nuc" := nucAbFl)
+    cellTypeFloor = cellTypeFloor %>% mutate("{celltype}_cell" := cellAbFl)
+  }  
+      
+  rownames(cellTypeInex) = cellTypeInex$ensembl_gene_id
+  rownames(cellTypeA15) = cellTypeA15$ensembl_gene_id
+  rownames(cellTypeExon) = cellTypeExon$ensembl_gene_id
+  rownames(cellTypeIntron) = cellTypeIntron$ensembl_gene_id
+  rownames(cellTypeFloor) = cellTypeFloor$ensembl_gene_id
+
+  # Fix column names 
+  colnames(cellTypeInex)[-1] = gsub("[ /]","_",colnames(cellTypeInex)[-1])
+  colnames(cellTypeA15)[-1] = gsub("[ /]","_",colnames(cellTypeA15)[-1])
+  colnames(cellTypeExon)[-1] = gsub("[ /]","_",colnames(cellTypeExon)[-1])
+  colnames(cellTypeIntron)[-1] = gsub("[ /]","_",colnames(cellTypeIntron)[-1])
+  colnames(cellTypeFloor)[-1] = gsub("[ /]","_",colnames(cellTypeFloor)[-1])
+
+    
+  ctExprList = list(cellTypeInex, cellTypeA15, cellTypeExon, cellTypeIntron)
+  names(ctExprList) = c("inex","A15","exon","intron")
+  readr::write_rds(ctExprList,"data/meta_brainatlas/aibs_celltype_expression.rds")
+}
+
+ctExprList = readr::read_rds("data/meta_brainatlas/aibs_celltype_expression.rds")
+
+
+
+# correlations between assays
+nxplot = ggplot(ctExprList$inex %>% filter(L5_IT_nuc > 1 & L5_IT_cell > 1),
+                aes(x = log10(L5_IT_cell), y = log10(L5_IT_nuc))) +
+  geom_hex(show.legend = F, bins = 60) + 
+  labs(x = "", y = "", title = "Intron & Exon")+ 
+  xlim(0,4.5) + ylim(0,4.5)+theme_minimal()
+
+eplot = ggplot(ctExprList$exon %>% filter(L5_IT_nuc > 1 & L5_IT_cell > 1),
+                aes(x = log10(L5_IT_cell), y = log10(L5_IT_nuc))) +
+  geom_hex(show.legend = F, bins = 60) + labs(x = "", y = "Nucleus log10 abundance", title = "Exon")+ theme_minimal() +xlim(0,4.5) +ylim(0,4.5)
+
+# filter on inex expression instead of scaled, per gupta
+splot2 = ggplot(ctExprList$A15[ctExprList$inex$L5_IT_cell > 1 & ctExprList$inex$L5_IT_nuc > 1,],
+                aes(x = log10(L5_IT_cell), y = log10(L5_IT_nuc))) +
+  geom_hex(show.legend = F, bins = 60) + labs(x = "", y = "", title = "Scaled")+ 
+  theme_minimal()
+
+splot = ggplot(ctExprList$A15 %>% filter(L5_IT_cell > 1 & L5_IT_nuc > 1),
+                aes(x = log10(L5_IT_cell), y = log10(L5_IT_nuc))) +
+  geom_hex(show.legend = F, bins = 60) + labs(x = "", y = "", title = "Scaled")+ 
+  theme_minimal() +xlim(0,4.5) +ylim(0,4.5)
+
+iplot = ggplot(ctExprList$intron %>% filter(L5_IT_nuc > 1 & L5_IT_cell > 1),
+                aes(x = log10(L5_IT_cell), y = log10(L5_IT_nuc))) +
+  geom_hex(show.legend = F, bins = 60) + labs(x = "Log Average CPM cells", y = "", title = "Intron") + theme_minimal() +xlim(0,4.5) +ylim(0,4.5)
+
+gridExtra::grid.arrange(nxplot +labs(y="Log10 CPM nuclei"), eplot +labs(x = "Log10 CPM cells",y="Log10 CPM nuclei"), iplot +labs(x = "Log10 CPM cells",y="Log10 CPM nuclei"), splot+labs(x = "Log10 CPM cells",y="Log10 CPM nuclei"))
+
+# marker gene, differential expression
+# standardize limits to be the same
+# add pearson to the plots
+# make the story more intuitive
+
+```
+
+
+```{r tech_marks}
+
+# scalar027 based on A15 rate of .027 per kb of gene
+scalar027 = geneAnnot$gene_length/1000*.027
+names(scalar027) = geneAnnot$ensembl_gene_id
+
+if(!file.exists("data/meta_brainatlas/tech_marks_list.rds")){
+  cellMats = read_rds("data/star/AIBS_scell_V3/all_cell_mats_5.rds")[c("exon","intron","inex")]
+all(rownames(cellMats$inex) == names(scalar027))
+cellMats$scaled_A15 = with(cellMats, exon + intron/scalar027)
+cellMats$scaled_A15 = Matrix::drop0(cellMats$scaled_A15)
+
+nucMats = read_rds("data/star/AIBS_snuc_V3/all_nuc_mats_5.rds")[c("exon","intron","inex")]
+all(rownames(nucMats$inex) == names(scalar027))
+nucMats$scaled_A15 = nucMats$exon + nucMats$intron/scalar027
+nucMats$scaled_A15 = Matrix::drop0(nucMats$scaled_A15)
+gc()
+
+# create seurat objects and find the markers
+# focus on L5 IT only for simplicity
+
+cbc_l5it = with(bcAnnot, barcode[tech == "cells" & subclass_label == "L5 IT"])
+nbc_l5it = with(bcAnnot, barcode[tech == "nuclei" & subclass_label == "L5 IT"])
+
+seurCombExon = merge(CreateSeuratObject(cellMats$exon[,cbc_l5it],project = "cell_exon"),
+                     CreateSeuratObject(nucMats$exon[,nbc_l5it], project = "nuc_exon"))
+
+seurCombInex = merge(CreateSeuratObject(cellMats$inex[,cbc_l5it],project = "cell_inex"),
+                     CreateSeuratObject(nucMats$inex[,nbc_l5it],project = "nuc_inex"))
+
+seurCombIntron = merge(CreateSeuratObject(cellMats$intron[,cbc_l5it], project = "cell_intron"),
+                     CreateSeuratObject(nucMats$intron[,nbc_l5it], project = "nuc_intron"))
+
+seurCombA15 = merge(CreateSeuratObject(cellMats$scaled_A15[,cbc_l5it], project = "cell_A15"),
+                     CreateSeuratObject(nucMats$scaled_A15[,nbc_l5it], project = "nuc_A15"))
+
+
+techMarksExonL5IT = FindAllMarkers(seurCombExon %>% NormalizeData(), 
+                                   only.pos = TRUE, logfc.threshold = log(1.5))
+techMarksInexL5IT = FindAllMarkers(seurCombInex %>% NormalizeData(),
+                                   only.pos = TRUE, logfc.threshold = log(1.5))
+techMarksA15L5IT = FindAllMarkers(seurCombA15 %>% NormalizeData(),
+                                  only.pos = TRUE, logfc.threshold = log(1.5))
+techMarksIntronL5IT = FindAllMarkers(seurCombIntron %>% NormalizeData(),
+                                     only.pos = TRUE, logfc.threshold = log(1.5))
+
+techMarksL5ITList = list(techMarksExonL5IT,techMarksInexL5IT,techMarksIntronL5IT,techMarksA15L5IT)
+names(techMarksList) = c("exon","inex","intron","scaled_A15")
+write_rds(techMarksList,file = "data/meta_brainatlas/tech_marks_list.rds")
+rm(cellMats)
+rm(nucMats)
+rm(seurCombA15,seurCombExon,seurCombInex,seurCombIntron)
+}
+
+######
+techMarksL5ITList = readr::read_rds("data/meta_brainatlas/tech_marks_list.rds")
+
+ggplot(data.frame("quant" = names(techMarksL5ITList),
+                  "n_genes" = sapply(techMarksL5ITList,function(x) sum(x$avg_log2FC > 1))) %>% mutate(quant = factor(quant, levels = c("inex","exon","intron","scaled_A15"))),
+       aes(x = quant, y = n_genes)) + geom_col(fill = "gray") + labs(x = "Quantification",y = "Inter-assay diffences") + theme_minimal()
+
+
+# gene length of interassay 
+#table(techMarksL5ITList$inex$cluster)
+
+ggplot(techMarksL5ITList$inex %>% left_join(geneAnnot, by = c("gene" = "ensembl_gene_id")), aes(x = log10(gene_length), fill = cluster)) + 
+  geom_histogram(position = "identity", alpha = .5) +
+  theme_minimal() + labs(x = "Log10 gene length",
+                         fill = "Assay") + scale_fill_manual(values = c("gray","orange"))
+
+
+# Figure 3A: Inter-assay differences per cell type
+
+if(!file.exists("data/meta_brainatlas/tech_marks_celltype.rds")){
+  techMarksCellType = vector("list",17)
+  names(techMarksCellType) = sharedIdents
+  techMarksA15CellType = vector("list",17)
+  names(techMarksA15CellType) = sharedIdents
+  for(celltype in sharedIdents){
+    print(celltype)
+    # get nucleus barcodes and cell barcodes for that type
+    nbc = (bcAnnot %>% filter(subclass_label == celltype & tech == "nuclei"))$barcode
+    cbc = (bcAnnot %>% filter(subclass_label == celltype & tech == "cells"))$barcode
+  
+    seurCombInex = merge(CreateSeuratObject(cellMats$inex[,cbc],project = "cell_inex"),
+                       CreateSeuratObject(nucMats$inex[,nbc],project = "nuc_inex")) %>%
+      NormalizeData()
+    marks = FindAllMarkers(seurCombInex, only.pos = T, logfc.threshold = log(1.5))
+    techMarksCellType[[celltype]] = marks
+    
+    seurCombA15 = merge(CreateSeuratObject(cellMats$scaled_A15[,cbc],project = "cell_A15"),
+                       CreateSeuratObject(nucMats$scaled_A15[,nbc],project = "nuc_A15")) %>%
+      NormalizeData()
+    marksA15 = FindAllMarkers(seurCombA15, only.pos = T, logfc.threshold = log(1.5))
+    techMarksA15CellType[[celltype]] = marksA15
+  }
+
+  intFracSummary = bcAnnot %>% group_by(subclass_label, tech) %>%
+    summarise(m = mean(intron_count_frac)) %>% 
+    pivot_wider(names_from = tech, values_from = m) %>%
+    rename(cell_mean_intron = cells, nuc_mean_intron = nuclei) %>%
+    filter(subclass_label %in% sharedIdents)
+  
+  readr::write_rds(techMarksCellType, "data/meta_brainatlas/tech_marks_celltype.rds")
+  readr::write_rds(techMarksA15CellType, "data/meta_brainatlas/tech_marks_A15_celltype.rds")
+}
+
+intFracSummary = bcAnnot %>% group_by(subclass_label, tech) %>%
+    summarise(m = mean(intron_count_frac)) %>% 
+    pivot_wider(names_from = tech, values_from = m) %>%
+    rename(cell_mean_intron = cells, nuc_mean_intron = nuclei) %>%
+    filter(subclass_label %in% sharedIdents)
+
+techMarksCellType = readr::read_rds("data/meta_brainatlas/tech_marks_celltype.rds")
+techMarksA15CellType = readr::read_rds("data/meta_brainatlas/tech_marks_A15_celltype.rds")
+
+techDf = data.frame("subclass_label" = names(techMarksCellType),
+                    "n_dif_inex" = as.numeric(lapply(techMarksCellType, function(x) sum(x$p_val_adj < .05 & x$avg_log2FC > log2(2)))),
+                    "n_dif_scaled" = as.numeric(lapply(techMarksA15CellType, function(x) sum(x$p_val_adj < .05 & x$avg_log2FC > log2(2)))))
+
+techDf = techDf %>% left_join(intFracSummary)
+techDf = techDf %>% left_join(distinct(bcAnnot %>% select(class_label, subclass_label)))
+
+
+techDf = techDf %>% left_join(bcAnnot %>% filter(subclass_label %in% sharedIdents) %>%
+  group_by(subclass_label, tech) %>% summarise(n_barcodes = n()) %>%
+  pivot_wider(names_from = tech, values_from = n_barcodes))
+
+
+# Figure 3A
+library(ggridges)
+
+ct_order = bcAnnot %>% filter(subclass_label %in% sharedIdents) %>%
+  group_by(subclass_label,tech) %>% summarise(class_label, m = median(intron_count_frac)) %>%
+  group_by(subclass_label) %>% summarise(class_label, dif = max(m)-min(m)) %>% distinct() %>%
+  group_by(class_label) %>% arrange(dif, .by_group=TRUE)
+
+ggplot(bcAnnot %>% filter(subclass_label %in% sharedIdents) %>%
+         mutate(subclass_label = factor(subclass_label, levels = ct_order$subclass_label)),
+       aes(x = intron_count_frac, y = subclass_label, fill = tech)) +
+  geom_density_ridges() + labs(x = "Intron count fraction", y = "") + theme_minimal() + scale_fill_manual(values = c("gray","orange"))
+
+
+
+# Figure 3B:
+
+# Dark2 palette, reordered
+ggplot(techDf %>% mutate(total_barcodes = cells+nuclei), aes(x = nuc_mean_intron/cell_mean_intron, y = n_dif_inex, size = (total_barcodes), color = class_label)) +
+  geom_point() + theme_minimal() + labs(x = "Intron content ratio", y = "Differentially-abundant genes") + 
+  scale_color_manual(values =c("#1B9E77","#7570B3", "#D95F02")) +
+  scale_x_continuous(breaks = seq(.8,2.2,.2))
+
+       
+  f# Figure 3C: dif exp 
+ggplot(techDf, aes(x = nuc_mean_intron/cell_mean_intron, y = n_dif_scaled/n_dif_inex,
+                   label = subclass_label, size = cells+nuclei, color = class_label)) + geom_point() +
+  scale_color_manual(values =c("#1B9E77","#7570B3", "#D95F02")) +
+  theme_minimal() + labs(x = "Intron content ratio", y = "Change in differentially-abundant genes", color = "Cell class")  +
+  xlim(1,4.5) + ylim(.5,1.45) + geom_point(aes(x = 40/9),y=631/1061,size=3,color="black")
+
+# FIgure 3D: cell type correlations after scaling
+
+
+
+# we should look at the genes that got sclaed down vs up for the correlations.
+
+
+
+
+
+# replace space or slash with underscore
+sharedIdentsFixed = gsub("[ /]","_",sharedIdents)
+
+ctCor = data.frame("subclass_label" = sharedIdents,"r_dif" = NA)
+rownames(ctCor) = sharedIdents
+# this is not doing what it should. 
+for(celltype in sharedIdents){
+  ctFixed = gsub("[ /]","_",celltype)
+  cell_col_f = paste0(ctFixed,"_cell")
+  nuc_col_f = paste0(ctFixed,"_nuc")
+
+  detGene = cellTypeInex[[cell_col_f]] > 1 & cellTypeInex[[nuc_col_f]] > 1
+
+  r = cor(log(cellTypeInex[detGene,cell_col_f]),
+          log(cellTypeInex[detGene,nuc_col_f]))
+  print(sum(detGene))
+  print(r)
+  
+  #detGene = cellTypeA15[[cell_col_f]] > 1 & cellTypeA15[[nuc_col_f]] > 1
+
+  r2 = cor(log(cellTypeA15[detGene,cell_col_f]),
+           log(cellTypeA15[detGene,nuc_col_f]))
+  print(r2)
+  print(celltype)
+  #print(r2 - r)
+  ctCor[[celltype,"r_dif"]] = r2 - r
+}
+
+ctCor = ctCor %>% left_join(intFracSummary) %>% mutate(intron_content_ratio = nuc_mean_intron/cell_mean_intron)
+
+ggplot(ctCor, aes(x = nuc_mean_intron/cell_mean_intron, y = r_dif)) +
+  geom_point() + theme_minimal() + labs(x = "Intron content ratio", y = "Change in correlation after scaling") + xlim(.8,4.5) + ylim(-.1,.1) + geom_point(aes(x = 40/9),y=.1,color="red")
+    
+# Take all cells in cluster 2, and find markers that separate cells in the 'g1' group (metadata
+# variable 'group')
+#markers <- FindMarkers(pbmc_small, ident.1 = "g1", group.by = 'groups', subset.ident = "2")
+
+
+
+# intra-assay marker genes
+
+
+
+sharedCell = bcAnnot$barcode[bcAnnot$subclass_label %in% sharedIdents & bcAnnot$tech == "cells"]
+
+# do we need to normalize data or is Seurat smart?
+cellMats = read_rds("data/star/AIBS_scell_V3/all_cell_mats_5.rds")[c("inex")]
+gc()
+
+seurTmp = cellMats$inex[,sharedCell] %>% 
+  CreateSeuratObject() %>%
+  NormalizeData()
+
+seurTmp$subclass_label = bcAnnot$subclass_label[match(sharedCell,                                                                      bcAnnot$barcode)]
+Idents(seurTmp) = seurTmp$subclass_label
+
+cellMarksInex = FindAllMarkers(seurTmp,
+               only.pos = T, logfc.threshold = log(2))
+rm(seurTmp)
+gc()
+
+##
+cellMats = read_rds("data/star/AIBS_scell_V3/all_cell_mats_5.rds")[c("exon","intron")]
+cellMats$scaled_A15 = with(cellMats, exon + intron/scalar027)
+seurTmp = cellMats$scaled_A15[,sharedCell] %>% 
+  CreateSeuratObject() %>%
+  NormalizeData()
+rm(cellMats)
+gc()
+seurTmp$subclass_label = bcAnnot$subclass_label[match(sharedCell,                                                                      bcAnnot$barcode)]
+Idents(seurTmp) = seurTmp$subclass_label
+
+cellMarksA15 = FindAllMarkers(seurTmp,
+               only.pos = T, logfc.threshold = log(2))
+gc()
+
+cellMarksList = list(cellMarksInex,cellMarksA15)
+names(cellMarksList) = c("inex","scaled_A15")
+readr::write_rds(cellMarksList,"data/meta_brainatlas/cell_marks_inex_A15.rds")
+
+cellMarksList = readr::read_rds("data/meta_brainatlas/cell_marks_inex_A15.rds")
+
+### nuc markers
+nucMats = read_rds("data/star/AIBS_snuc_V3/all_nuc_mats_5.rds")["inex"]
+
+
+seurTmp = nucMats$inex %>% 
+  CreateSeuratObject() %>%
+  NormalizeData()
+
+seurTmp$subclass_label = bcAnnot$subclass_label[match(colnames(seurTmp),                                                                      bcAnnot$barcode)]
+Idents(seurTmp) = seurTmp$subclass_label
+
+nucMarksInex = FindAllMarkers(seurTmp,
+               only.pos = T, logfc.threshold = log(2))
+rm(seurTmp)
+gc()
+
+##
+nucMats = read_rds("data/star/AIBS_snuc_V3/all_nuc_mats_5.rds")[c("exon","intron")]
+nucMats$scaled_A15 = with(nucMats, exon + intron/scalar027)
+
+seurTmp = nucMats$scaled_A15 %>% 
+  CreateSeuratObject() %>%
+  NormalizeData()
+rm(nucMats)
+gc()
+seurTmp$subclass_label = bcAnnot$subclass_label[match(colnames(seurTmp),                                                                      bcAnnot$barcode)]
+Idents(seurTmp) = seurTmp$subclass_label
+
+nucMarksA15 = FindAllMarkers(seurTmp,
+               only.pos = T, logfc.threshold = log(2))
+rm(seurTmp)
+gc()
+
+nucMarksList = list(nucMarksInex,nucMarksA15)
+names(nucMarksList) = c("inex","scaled_A15")
+readr::write_rds(nucMarksList, file = "data/meta_brainatlas/nuc_marks_inex_A15.rds")
+nucMarksList = readr::read_rds("data/meta_brainatlas/nuc_marks_inex_A15.rds")
+# what if we look only at intron counts for marker gene analysis?
+
+
+# calculate similarity of the marker gene sets
+markerRecap = data.frame("subclass_label" = sharedIdents,
+                         "recap_inex" = NA,
+                         "recap_scaled" = NA,
+                         "n_marks_cell_inex" = NA,
+                         "n_marks_cell_A15" = NA,
+                         "recap_scaled_nuc_inex_cell" = NA)
+row.names(markerRecap) = sharedIdents
+for(celltype in sharedIdents){
+  cg = (cellMarksList$inex %>% filter(cluster == celltype & p_val_adj < .05))$gene
+  ng = (nucMarksList$inex %>% filter(cluster == celltype & p_val_adj < .05))$gene
+  recap_frac = mean(cg %in% ng)
+  markerRecap[celltype,2] = recap_frac
+  markerRecap[celltype,4] = length(cg)
+  cgA15 = (cellMarksList$scaled_A15 %>% filter(cluster == celltype & p_val_adj < .05))$gene
+  ngA15 = (nucMarksList$scaled_A15 %>% filter(cluster == celltype & p_val_adj < .05))$gene
+  
+  recap_frac_A15 = mean(cgA15 %in% ngA15)
+  markerRecap[celltype,3] = recap_frac_A15
+  markerRecap[celltype,5] = length(cgA15)
+  
+  markerRecap[celltype,6] = mean(ngA15 %in% cg)
+}
+
+View(markerRecap)
+
+markerRecap$n_cell = as.numeric(with(bcAnnot, (table(subclass_label[tech == "cells"])))[markerRecap$subclass_label])
+markerRecap$n_nuc = as.numeric(with(bcAnnot, (table(subclass_label[tech == "nuclei"])))[markerRecap$subclass_label])
+
+markerRecap = markerRecap %>% left_join(distinct(bcAnnot %>% dplyr::select(subclass_label, class_label)))
+
+
+ggplot(markerRecap, aes(x = n_cell, y = n_marks_cell_inex, color = class_label)) + geom_point()
+
+# add median intron fractions for each cell type
+
+
+intFracSummary = bcAnnot %>% group_by(subclass_label, tech) %>%
+  summarise(m = median(intron_count_frac)) %>% 
+  pivot_wider(names_from = tech, values_from = m) %>%
+  rename(cell_mean_intron = cells, nuc_mean_intron = nuclei)
+
+markerRecap = markerRecap %>% left_join(intFracSummary)
+
+
+ggplot(markerRecap, aes(x = nuc_mean_intron - cell_mean_intron, y = recap_inex, size = n_cell+n_nuc)) + geom_point()
+
+
+# Supplementary figure 1
+
+ggplot(markerRecap %>% arrange(desc(recap_scaled/recap_inex)) %>%
+         mutate(subclass_label = factor(subclass_label, 
+                                        levels = subclass_label)) %>%
+         pivot_longer(cols = c(recap_inex, recap_scaled),
+                                    names_to = "quant",
+                                    names_prefix = "recap_",
+                                    values_to = "recap_fraction"),
+       aes(x = subclass_label, y = recap_fraction,
+           fill = quant)) + geom_col(position = "dodge")
+
+```
+
+
+
+
+
