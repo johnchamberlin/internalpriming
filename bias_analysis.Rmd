@@ -15,6 +15,7 @@ library(readr)
 library(Seurat)
 library(tidyr)
 library(ggplot2)
+library(ggridges)
 
 
 ### ggplot formatting
@@ -142,14 +143,17 @@ if(!file.exists("data/meta_brainatlas/barcodes_annotated.tsv")){
 # correlations
 
 # figure 2A: Inex bias is stronger in nuclei, but intron bias is identical
-with(aibs %>% filter(inex_cpm.cell > 10), cor.test(log(inex_cpm.cell), log(gene_length)))
-with(aibs %>% filter(inex_cpm.nuc > 10), cor.test(log(inex_cpm.nuc), log(gene_length)))
+with(aibs %>% filter(inex_cpm.cell > 1), cor.test(log(inex_cpm.cell), log(gene_length)))
+with(aibs %>% filter(inex_cpm.nuc > 1), cor.test(log(inex_cpm.nuc), log(gene_length)))
 
-with(aibs %>% filter(intron_cpm.cell > 10), cor.test(log(intron_cpm.cell), log(gene_length)))
-with(aibs %>% filter(intron_cpm.nuc > 10), cor.test(log(intron_cpm.nuc), log(gene_length)))
+with(aibs %>% filter(intron_cpm.cell > 1), cor.test(log(intron_cpm.cell), log(gene_length)))
+with(aibs %>% filter(intron_cpm.nuc > 1), cor.test(log(intron_cpm.nuc), log(gene_length)))
+
+with(aibs %>% filter(exon_cpm.cell > 1), cor.test(log(exon_cpm.cell), log(gene_length)))
+with(aibs %>% filter(exon_cpm.nuc > 1), cor.test(log(exon_cpm.nuc), log(gene_length)))
 
 # make expression data long format and filter out genes with negligible expression
-aibs_long_filtered = aibs %>% 
+aibs_long = aibs %>% 
   pivot_longer(cols = c(exon_cpm.nuc, exon_cpm.cell, inex_cpm.nuc, 
                         inex_cpm.cell, intron_cpm.nuc, intron_cpm.cell), 
                values_to = "cpm", 
@@ -158,7 +162,7 @@ aibs_long_filtered = aibs %>%
   dplyr::select(ensembl_gene_id, cpm, quant, assay, gene_length) %>% 
   mutate(quant = gsub("_cpm","",quant))
 
-plot_glbias = ggplot(aibs_long_filtered %>%
+plot_glbias = ggplot(aibs_long %>%
                             filter(cpm > 1 & quant != "exon") %>%
                             mutate(bin_gene_length = factor(ntile(gene_length, 4)),
                                    quant = recode(quant, 
@@ -174,16 +178,10 @@ plot_glbias = ggplot(aibs_long_filtered %>%
   ylim(0,4.5) + scale_fill_manual(values = c("gray","orange"))
 
 
-plot_glbias
-
-# intron fractino vs gene length bin
-
-# ggplot(aibs %>% filter(inex_cpm.cell > 1 & inex_cpm.nuc > 1) %>%
-#          mutate(bin_gene_length = factor(ntile(gene_length, 8))), aes(x = bin_gene_length, y = gene_pct_intron)) + 
-#   geom_boxplot()
+plot_glbias # FIGURE
 
 
-# conceptual figure
+# conceptual figures
 
 ggplot(bcAnnot %>% group_by(tech) %>% summarise(int = median(intron_count_frac),
                                                 ex = 1-int) %>% 
@@ -290,7 +288,10 @@ if(!file.exists("data/meta_brainatlas/aibs_celltype_expression.rds")){
 }
 
 ctExprList = readr::read_rds("data/meta_brainatlas/aibs_celltype_expression.rds")
-
+cellTypeInex = ctExprList$inex
+cellTypeExon = ctExprList$exon
+cellTypeA15 = ctExprList$A15
+cellTypeIntron = ctExprList$intron
 
 
 # correlations between assays
@@ -319,6 +320,8 @@ iplot = ggplot(ctExprList$intron %>% filter(L5_IT_nuc > 1 & L5_IT_cell > 1),
                 aes(x = log10(L5_IT_cell), y = log10(L5_IT_nuc))) +
   geom_hex(show.legend = F, bins = 60) + labs(x = "Log Average CPM cells", y = "", title = "Intron") + theme_minimal() +xlim(0,4.5) +ylim(0,4.5)
 
+
+# FIGURE
 gridExtra::grid.arrange(nxplot +labs(y="Log10 CPM nuclei"), eplot +labs(x = "Log10 CPM cells",y="Log10 CPM nuclei"), iplot +labs(x = "Log10 CPM cells",y="Log10 CPM nuclei"), splot+labs(x = "Log10 CPM cells",y="Log10 CPM nuclei"))
 
 # marker gene, differential expression
@@ -331,7 +334,7 @@ gridExtra::grid.arrange(nxplot +labs(y="Log10 CPM nuclei"), eplot +labs(x = "Log
 
 ```{r tech_marks}
 
-# scalar027 based on A15 rate of .027 per kb of gene
+# scalar027 based on A15 rate of .027 per kb of gene in mouse genome
 scalar027 = geneAnnot$gene_length/1000*.027
 names(scalar027) = geneAnnot$ensembl_gene_id
 
@@ -390,10 +393,9 @@ ggplot(data.frame("quant" = names(techMarksL5ITList),
                   "n_genes" = sapply(techMarksL5ITList,function(x) sum(x$avg_log2FC > 1))) %>% mutate(quant = factor(quant, levels = c("inex","exon","intron","scaled_A15"))),
        aes(x = quant, y = n_genes)) + geom_col(fill = "gray") + labs(x = "Quantification",y = "Inter-assay diffences") + theme_minimal()
 
-
 # gene length of interassay 
-#table(techMarksL5ITList$inex$cluster)
 
+# FIGURE
 ggplot(techMarksL5ITList$inex %>% left_join(geneAnnot, by = c("gene" = "ensembl_gene_id")), aes(x = log10(gene_length), fill = cluster)) + 
   geom_histogram(position = "identity", alpha = .5) +
   theme_minimal() + labs(x = "Log10 gene length",
@@ -436,10 +438,11 @@ if(!file.exists("data/meta_brainatlas/tech_marks_celltype.rds")){
   readr::write_rds(techMarksA15CellType, "data/meta_brainatlas/tech_marks_A15_celltype.rds")
 }
 
+
 intFracSummary = bcAnnot %>% group_by(subclass_label, tech) %>%
     summarise(m = mean(intron_count_frac)) %>% 
     pivot_wider(names_from = tech, values_from = m) %>%
-    rename(cell_mean_intron = cells, nuc_mean_intron = nuclei) %>%
+    dplyr::rename(cell_mean_intron = cells, nuc_mean_intron = nuclei) %>%
     filter(subclass_label %in% sharedIdents)
 
 techMarksCellType = readr::read_rds("data/meta_brainatlas/tech_marks_celltype.rds")
@@ -450,13 +453,12 @@ techDf = data.frame("subclass_label" = names(techMarksCellType),
                     "n_dif_scaled" = as.numeric(lapply(techMarksA15CellType, function(x) sum(x$p_val_adj < .05 & x$avg_log2FC > log2(2)))))
 
 techDf = techDf %>% left_join(intFracSummary)
-techDf = techDf %>% left_join(distinct(bcAnnot %>% select(class_label, subclass_label)))
+techDf = techDf %>% left_join(distinct(bcAnnot %>% dplyr::select(class_label, subclass_label)))
 
 
 techDf = techDf %>% left_join(bcAnnot %>% filter(subclass_label %in% sharedIdents) %>%
   group_by(subclass_label, tech) %>% summarise(n_barcodes = n()) %>%
   pivot_wider(names_from = tech, values_from = n_barcodes))
-
 
 # Figure 3A
 library(ggridges)
@@ -466,6 +468,7 @@ ct_order = bcAnnot %>% filter(subclass_label %in% sharedIdents) %>%
   group_by(subclass_label) %>% summarise(class_label, dif = max(m)-min(m)) %>% distinct() %>%
   group_by(class_label) %>% arrange(dif, .by_group=TRUE)
 
+# FIGURE
 ggplot(bcAnnot %>% filter(subclass_label %in% sharedIdents) %>%
          mutate(subclass_label = factor(subclass_label, levels = ct_order$subclass_label)),
        aes(x = intron_count_frac, y = subclass_label, fill = tech)) +
@@ -482,23 +485,14 @@ ggplot(techDf %>% mutate(total_barcodes = cells+nuclei), aes(x = nuc_mean_intron
   scale_x_continuous(breaks = seq(.8,2.2,.2))
 
        
-  f# Figure 3C: dif exp 
+# Figure 3C: dif exp 
 ggplot(techDf, aes(x = nuc_mean_intron/cell_mean_intron, y = n_dif_scaled/n_dif_inex,
                    label = subclass_label, size = cells+nuclei, color = class_label)) + geom_point() +
   scale_color_manual(values =c("#1B9E77","#7570B3", "#D95F02")) +
   theme_minimal() + labs(x = "Intron content ratio", y = "Change in differentially-abundant genes", color = "Cell class")  +
-  xlim(1,4.5) + ylim(.5,1.45) + geom_point(aes(x = 40/9),y=631/1061,size=3,color="black")
+  xlim(.9,4.5) + ylim(.5,1.45) + geom_point(aes(x = 40/9),y=631/1061,size=3,color="black")
 
-# FIgure 3D: cell type correlations after scaling
-
-
-
-# we should look at the genes that got sclaed down vs up for the correlations.
-
-
-
-
-
+#####
 # replace space or slash with underscore
 sharedIdentsFixed = gsub("[ /]","_",sharedIdents)
 
@@ -517,7 +511,7 @@ for(celltype in sharedIdents){
   print(sum(detGene))
   print(r)
   
-  #detGene = cellTypeA15[[cell_col_f]] > 1 & cellTypeA15[[nuc_col_f]] > 1
+  detGene = cellTypeA15[[cell_col_f]] > 1 & cellTypeA15[[nuc_col_f]] > 1
 
   r2 = cor(log(cellTypeA15[detGene,cell_col_f]),
            log(cellTypeA15[detGene,nuc_col_f]))
@@ -527,163 +521,112 @@ for(celltype in sharedIdents){
   ctCor[[celltype,"r_dif"]] = r2 - r
 }
 
-ctCor = ctCor %>% left_join(intFracSummary) %>% mutate(intron_content_ratio = nuc_mean_intron/cell_mean_intron)
+ctCor = ctCor %>% left_join(intFracSummary) %>% mutate(intron_content_ratio = nuc_mean_intron/cell_mean_intron) %>% 
+  left_join(techDf %>% dplyr::select(subclass_label, class_label, cells, nuclei))
 
-ggplot(ctCor, aes(x = nuc_mean_intron/cell_mean_intron, y = r_dif)) +
-  geom_point() + theme_minimal() + labs(x = "Intron content ratio", y = "Change in correlation after scaling") + xlim(.8,4.5) + ylim(-.1,.1) + geom_point(aes(x = 40/9),y=.1,color="red")
+# SUPP FIGURE
+ggplot(ctCor, aes(x = nuc_mean_intron/cell_mean_intron, y = r_dif, color = class_label, size = cells+nuclei)) +
+  geom_point() + theme_minimal() + labs(x = "Intron content ratio (nuclei/cells)", y = "Change in correlation after scaling") + xlim(.8,4.5) + ylim(-.1,.1) + geom_point(aes(x = 40/9),y=.1,color="red")
     
-# Take all cells in cluster 2, and find markers that separate cells in the 'g1' group (metadata
-# variable 'group')
-#markers <- FindMarkers(pbmc_small, ident.1 = "g1", group.by = 'groups', subset.ident = "2")
-
-
-
-# intra-assay marker genes
-
-
-
-sharedCell = bcAnnot$barcode[bcAnnot$subclass_label %in% sharedIdents & bcAnnot$tech == "cells"]
-
-# do we need to normalize data or is Seurat smart?
-cellMats = read_rds("data/star/AIBS_scell_V3/all_cell_mats_5.rds")[c("inex")]
-gc()
-
-seurTmp = cellMats$inex[,sharedCell] %>% 
-  CreateSeuratObject() %>%
-  NormalizeData()
-
-seurTmp$subclass_label = bcAnnot$subclass_label[match(sharedCell,                                                                      bcAnnot$barcode)]
-Idents(seurTmp) = seurTmp$subclass_label
-
-cellMarksInex = FindAllMarkers(seurTmp,
-               only.pos = T, logfc.threshold = log(2))
-rm(seurTmp)
-gc()
-
 ##
-cellMats = read_rds("data/star/AIBS_scell_V3/all_cell_mats_5.rds")[c("exon","intron")]
-cellMats$scaled_A15 = with(cellMats, exon + intron/scalar027)
-seurTmp = cellMats$scaled_A15[,sharedCell] %>% 
-  CreateSeuratObject() %>%
-  NormalizeData()
-rm(cellMats)
-gc()
-seurTmp$subclass_label = bcAnnot$subclass_label[match(sharedCell,                                                                      bcAnnot$barcode)]
-Idents(seurTmp) = seurTmp$subclass_label
-
-cellMarksA15 = FindAllMarkers(seurTmp,
-               only.pos = T, logfc.threshold = log(2))
-gc()
-
-cellMarksList = list(cellMarksInex,cellMarksA15)
-names(cellMarksList) = c("inex","scaled_A15")
-readr::write_rds(cellMarksList,"data/meta_brainatlas/cell_marks_inex_A15.rds")
-
-cellMarksList = readr::read_rds("data/meta_brainatlas/cell_marks_inex_A15.rds")
-
-### nuc markers
-nucMats = read_rds("data/star/AIBS_snuc_V3/all_nuc_mats_5.rds")["inex"]
+```
 
 
-seurTmp = nucMats$inex %>% 
-  CreateSeuratObject() %>%
-  NormalizeData()
+```{r supplemental}
+# read data from sci rna seq paper
 
-seurTmp$subclass_label = bcAnnot$subclass_label[match(colnames(seurTmp),                                                                      bcAnnot$barcode)]
-Idents(seurTmp) = seurTmp$subclass_label
+meta_fetal = data.table::fread("data/cao2020_sciseq3/GSE156793_S1_metadata_cells.txt")
+expr_fetal = data.table::fread("data/cao2020_sciseq3/GSE156793_S4_gene_expression_tissue.txt")
 
-nucMarksInex = FindAllMarkers(seurTmp,
-               only.pos = T, logfc.threshold = log(2))
-rm(seurTmp)
-gc()
+hg = data.table::fread("refdata/human_ensembl99.tsv")
 
-##
-nucMats = read_rds("data/star/AIBS_snuc_V3/all_nuc_mats_5.rds")[c("exon","intron")]
-nucMats$scaled_A15 = with(nucMats, exon + intron/scalar027)
+# repair gene IDs
+expr_fetal = expr_fetal %>% dplyr::rename(ensembl_gene_id = RowID) %>%
+  mutate(ensembl_gene_id = unlist(lapply(strsplit(ensembl_gene_id,"\\."),`[`,1))) %>% left_join(hg)
 
-seurTmp = nucMats$scaled_A15 %>% 
-  CreateSeuratObject() %>%
-  NormalizeData()
-rm(nucMats)
-gc()
-seurTmp$subclass_label = bcAnnot$subclass_label[match(colnames(seurTmp),                                                                      bcAnnot$barcode)]
-Idents(seurTmp) = seurTmp$subclass_label
+# values are counts per million
+expr_fetal %>% group_by(!is.na(gene_length)) %>% summarise(sum(Cerebrum))
 
-nucMarksA15 = FindAllMarkers(seurTmp,
-               only.pos = T, logfc.threshold = log(2))
-rm(seurTmp)
-gc()
+tissue_pears = apply(expr_fetal[,2:16],2,FUN = cor, y = expr_fetal$gene_length, 
+      use = "pairwise.complete.obs")
+tissue_pears = sort(tissue_pears, decreasing = F)
 
-nucMarksList = list(nucMarksInex,nucMarksA15)
-names(nucMarksList) = c("inex","scaled_A15")
-readr::write_rds(nucMarksList, file = "data/meta_brainatlas/nuc_marks_inex_A15.rds")
-nucMarksList = readr::read_rds("data/meta_brainatlas/nuc_marks_inex_A15.rds")
-# what if we look only at intron counts for marker gene analysis?
+meta_fetal = meta_fetal %>% mutate(intron_fraction = Intron_reads/All_reads) %>%
+  left_join(data.frame("Organ" = names(tissue_pears),
+                       "pearson" = as.numeric(tissue_pears)))
+intfrac_order = meta_fetal %>% group_by(Organ) %>%
+  summarise(med_int_frac = median(intron_fraction)) %>%
+  arrange(med_int_frac)
 
-
-# calculate similarity of the marker gene sets
-markerRecap = data.frame("subclass_label" = sharedIdents,
-                         "recap_inex" = NA,
-                         "recap_scaled" = NA,
-                         "n_marks_cell_inex" = NA,
-                         "n_marks_cell_A15" = NA,
-                         "recap_scaled_nuc_inex_cell" = NA)
-row.names(markerRecap) = sharedIdents
-for(celltype in sharedIdents){
-  cg = (cellMarksList$inex %>% filter(cluster == celltype & p_val_adj < .05))$gene
-  ng = (nucMarksList$inex %>% filter(cluster == celltype & p_val_adj < .05))$gene
-  recap_frac = mean(cg %in% ng)
-  markerRecap[celltype,2] = recap_frac
-  markerRecap[celltype,4] = length(cg)
-  cgA15 = (cellMarksList$scaled_A15 %>% filter(cluster == celltype & p_val_adj < .05))$gene
-  ngA15 = (nucMarksList$scaled_A15 %>% filter(cluster == celltype & p_val_adj < .05))$gene
-  
-  recap_frac_A15 = mean(cgA15 %in% ngA15)
-  markerRecap[celltype,3] = recap_frac_A15
-  markerRecap[celltype,5] = length(cgA15)
-  
-  markerRecap[celltype,6] = mean(ngA15 %in% cg)
-}
-
-View(markerRecap)
-
-markerRecap$n_cell = as.numeric(with(bcAnnot, (table(subclass_label[tech == "cells"])))[markerRecap$subclass_label])
-markerRecap$n_nuc = as.numeric(with(bcAnnot, (table(subclass_label[tech == "nuclei"])))[markerRecap$subclass_label])
-
-markerRecap = markerRecap %>% left_join(distinct(bcAnnot %>% dplyr::select(subclass_label, class_label)))
-
-
-ggplot(markerRecap, aes(x = n_cell, y = n_marks_cell_inex, color = class_label)) + geom_point()
-
-# add median intron fractions for each cell type
-
-
-intFracSummary = bcAnnot %>% group_by(subclass_label, tech) %>%
-  summarise(m = median(intron_count_frac)) %>% 
-  pivot_wider(names_from = tech, values_from = m) %>%
-  rename(cell_mean_intron = cells, nuc_mean_intron = nuclei)
-
-markerRecap = markerRecap %>% left_join(intFracSummary)
-
-
-ggplot(markerRecap, aes(x = nuc_mean_intron - cell_mean_intron, y = recap_inex, size = n_cell+n_nuc)) + geom_point()
-
-
-# Supplementary figure 1
-
-ggplot(markerRecap %>% arrange(desc(recap_scaled/recap_inex)) %>%
-         mutate(subclass_label = factor(subclass_label, 
-                                        levels = subclass_label)) %>%
-         pivot_longer(cols = c(recap_inex, recap_scaled),
-                                    names_to = "quant",
-                                    names_prefix = "recap_",
-                                    values_to = "recap_fraction"),
-       aes(x = subclass_label, y = recap_fraction,
-           fill = quant)) + geom_col(position = "dodge")
+# SUPP FIGURE
+ggplot(meta_fetal %>% mutate(Organ = factor(Organ, levels = intfrac_order$Organ)), aes(x = intron_fraction, y = Organ, fill = pearson)) +
+  geom_density_ridges() + labs(x = "Intronic read fraction") +
+  theme_minimal()
 
 ```
 
 
+```{r GOseq}
+# ontology analysis of cell vs nucleus
+library(goseq)
+techMarksL5ITList$inex
+
+nucGenesInex = geneAnnot$ensembl_gene_id %in% techMarksL5ITList$inex$gene[techMarksL5ITList$inex$cluster == "nuc_inex"]
+names(nucGenesInex) = geneAnnot$ensembl_gene_id  
 
 
+cellGenesInex = geneAnnot$ensembl_gene_id %in% techMarksL5ITList$inex$gene[techMarksL5ITList$inex$cluster == "cell_inex"]
+names(cellGenesInex) = geneAnnot$ensembl_gene_id  
+  
+# filter so we only include the genes that were detected somewhere
+all(names(nucGenesInex) == aibs$ensembl_gene_id)
+nucGenesInex = nucGenesInex[aibs$inex_cpm.nuc > 1 | aibs$inex_cpm.cell > 1]
+cellGenesInex = cellGenesInex[aibs$inex_cpm.nuc > 1 | aibs$inex_cpm.cell > 1]
 
+  
+pwf.inex = goseq::nullp(DEgenes = nucGenesInex, 
+             bias.data = log(aibs$gene_length[match(names(nucGenesInex), 
+                                                          aibs$ensembl_gene_id)]))
+
+GO.inex = goseq::goseq(pwf.inex, "mm10", "ensGene")
+GO.inex.unadj = goseq::goseq(pwf.inex, "mm10", "ensGene",
+                             method = "Hypergeometric")
+
+  
+pwf.inex.cell = goseq::nullp(DEgenes = cellGenesInex, 
+             bias.data = log(aibs$gene_length[match(names(cellGenesInex), 
+                                                          aibs$ensembl_gene_id)]))
+
+GO.inex.cell = goseq::goseq(pwf.inex.cell, "mm10", "ensGene")
+GO.inex.cell.unadj = goseq::goseq(pwf.inex.cell, "mm10", "ensGene",
+                             method = "Hypergeometric")
+
+head(GO.inex)
+head(GO.inex.unadj)
+
+# scaled
+nucGenesA15 = geneAnnot$ensembl_gene_id %in% techMarksL5ITList$scaled_A15$gene[techMarksL5ITList$scaled_A15$cluster == "nuc_A15"]
+names(nucGenesA15) = geneAnnot$ensembl_gene_id  
+  
+# filter so we only include the genes that were detected somewhere
+all(names(nucGenesA15) == aibs$ensembl_gene_id)
+nucGenesA15 = nucGenesA15[aibs$scaled_A15_cpm.nuc > 1 | aibs$scaled_A15_cpm.cell > 1]
+  
+  
+pwf.A15 = goseq::nullp(DEgenes = nucGenesA15, 
+             bias.data = log(aibs$gene_length[match(names(nucGenesA15), 
+                                                          aibs$ensembl_gene_id)]))
+
+GO.A15 = goseq::goseq(pwf.A15, "mm10", "ensGene")
+GO.A15.unadj = goseq::goseq(pwf.A15, "mm10", "ensGene",
+                             method = "Hypergeometric")
+
+head(GO.A15)
+head(GO.A15.unadj)
+
+
+data.table::fwrite(GO.inex, file="data/meta_brainatlas/goseq_inex_L5ITnuc.adj.tsv",sep = "\t")
+data.table::fwrite(GO.inex.unadj, file="data/meta_brainatlas/goseq_inex_L5ITnuc.unadj.tsv",sep = "\t")
+data.table::fwrite(GO.A15.unadj, file="data/meta_brainatlas/goseq_A15_L5ITnuc.unadj.tsv",sep = "\t")
+
+```
