@@ -1,8 +1,8 @@
 ---
 title: "Sampling bias analysis final"
 author: "John Chamberlin"
-date: "5/1/2023"
-output: html_document
+date: "2024/01/25"
+output: rmarkdown::github_document
 ---
 
 ```{r setup, include=FALSE}
@@ -283,6 +283,20 @@ plot_inex_bias = ggplot(aibs_long %>%
   scale_fill_manual(values = c("gray","orange"))
 
 plot_inex_bias
+
+# gene bias correlations
+ctExprList$inex %>% left_join(geneAnnot) %>% filter(L5_IT_nuc > 1 & L5_IT_cell > 1) %>%
+  summarise(cor(gene_length, log(L5_IT_nuc)),
+            cor(gene_length, log(L5_IT_cell)))
+
+ctExprList$exon %>% left_join(geneAnnot) %>% filter(L5_IT_nuc > 1 & L5_IT_cell > 1) %>%
+  summarise(cor(gene_length, log(L5_IT_nuc)),
+            cor(gene_length, log(L5_IT_cell)))
+
+
+ctExprList$intron %>% left_join(geneAnnot) %>% filter(L5_IT_nuc > 1 & L5_IT_cell > 1) %>%
+  summarise(cor(gene_length, log(L5_IT_nuc)),
+            cor(gene_length, log(L5_IT_cell)))
 ```
 
 
@@ -377,6 +391,7 @@ gridExtra::grid.arrange(nxplot +labs(y="Log10 CPM nuclei"),
 
 
 
+## Figure S2B
 ```{r figure_2BS2}
 
 # ggplot(data.frame("quant" = names(techMarksL5ITList),
@@ -385,8 +400,6 @@ gridExtra::grid.arrange(nxplot +labs(y="Log10 CPM nuclei"),
 #        aes(x = quant, y = n_genes)) + geom_col(fill = "gray") + 
 #   labs(x = "Quantification", y = "Inter-assay diffences") + theme_minimal()
 
-
-# FIGURE 2A IN PROGRESS
 
 
 df_tmExon = techMarksL5ITList$exon %>% 
@@ -416,6 +429,8 @@ plot_tmIntron = ggplot(df_tmIntron, aes(x = log10(gene_length), fill = cluster))
                          fill = "Assay") + scale_fill_manual(values = c("gray","orange")) +
   geom_vline(data = df_tmInex %>% group_by(cluster) %>% mutate(med_x = median(log10(gene_length))), mapping=aes(xintercept = med_x,color=cluster)) + scale_color_manual(values = c("gray","orange"))
 
+
+# Figure S2B
 gridExtra::grid.arrange(plot_tmExon + theme(legend.position="none"), 
                         plot_tmInex + theme(legend.position = "none"), 
                         plot_tmIntron + theme(legend.position = "none"), 
@@ -431,6 +446,8 @@ wilcox.test(log10(gene_length) ~ cluster, data=df_tmInex)
 
 ###
 ```
+
+## Figure 3
 
 ```{r figure_3}
 
@@ -504,7 +521,7 @@ ct_order = bcAnnot %>% filter(subclass_label %in% sharedIdents) %>%
   group_by(subclass_label) %>% summarise(class_label, dif = max(m)-min(m)) %>% distinct() %>%
   group_by(class_label) %>% arrange(dif, .by_group=TRUE)
 
-# FIGURE
+# Figure 3A
 ggplot(bcAnnot %>% filter(subclass_label %in% sharedIdents) %>%
          mutate(subclass_label = factor(subclass_label, levels = ct_order$subclass_label)),
        aes(x = intron_count_frac, y = subclass_label, fill = tech)) +
@@ -705,7 +722,7 @@ intFracSummary %>% pivot_longer(cols=c(cell_mean_intron,nuc_mean_intron),
                                 values_to = "intron_fraction",names_to="tech") %>%
   mutate(tech = gsub("_mean_intron","",tech),
          tc = paste0(tech, subclass_label))
-
+# Figure 3D
 markerInex %>% group_by(tech, cluster) %>% 
   summarise(cluster_size,med_mark_gl = median(log10(gene_length))) %>%
   mutate(tc = paste0(tech,cluster)) %>% left_join(
@@ -720,6 +737,7 @@ scale_color_manual(values = c("gray60","orange")) +
   labs(x = "Cluster intron fraction",y = "Med. marker length (Log10 bp)") + theme_minimal() + geom_line(color="gray",size=.4) + theme(legend.position="none")
 ```
 
+## Figure 3E
 
 ```{r marker_jaccard}
 # Figure 3E
@@ -809,45 +827,71 @@ data.table::fwrite(GO.inex, file="data/meta_brainatlas/goseq_inex_L5ITnuc.adj.ts
 data.table::fwrite(GO.inex.unadj, file="data/meta_brainatlas/goseq_inex_L5ITnuc.unadj.tsv",sep = "\t")
 data.table::fwrite(GO.scaled.unadj, file="data/meta_brainatlas/goseq_A15_L5ITnuc.unadj.tsv",sep = "\t")
 
+GO.exon.unadj$mode = "hypergeometric"
+GO.exon.unadj$quant = "exon"
+GO.inex$mode = "goseq"
+GO.inex$quant = "inex"
 
+GO.inex.unadj$mode = "hypergeometric"
+GO.inex.unadj$quant = "inex"
+
+GO.scaled.unadj$mode = "hypergeometric"
+GO.scaled.unadj$quant = "lengthcorrected"
+
+data.table::fwrite(do.call("rbind",list(GO.exon.unadj, GO.inex,GO.inex.unadj, GO.scaled.unadj)),
+                   "figures/submitted_GR2023/Supplemental_Table_S1.tsv")
 ###
 ```
 
 # Figure 5: Effects of preprocessing (Thrupp et al case study)
 ```{r figure_quantmarks}
 #Thrupp et al data
-microExon = readr::read_rds("./data/thrupp/seurat.cellnuc.exon.rds")
-microInex = readr::read_rds("./data/thrupp/seurat.cellnuc.inex.rds")
 
-microCellExNucInex = merge(subset(microExon,tech=="cell"),
-                           subset(microInex,tech=="nucleus"))
+if(!file.exists("data/thrupp/tech_quant_markers_list.rds")){
+  microExon = readr::read_rds("./data/thrupp/seurat.cellnuc.exon.rds")
+  microInex = readr::read_rds("./data/thrupp/seurat.cellnuc.inex.rds")
+  
+  microCellExNucInex = merge(subset(microExon,tech=="cell"),
+                             subset(microInex,tech=="nucleus"))
+  
+  markersMicroCellExNucInex = FindAllMarkers(microCellExNucInex %>% SetIdent(value= 'tech'), 
+                                     only.pos = TRUE, logfc.threshold = log(1.5))
+  
+  
+  markersMicroCellExNucEx = FindAllMarkers(microExon %>% SetIdent(value= 'tech'), 
+                                     only.pos = TRUE, logfc.threshold = log(1.5))
+  
+  markersMicroCellInexNucInex = FindAllMarkers(microInex %>% SetIdent(value= 'tech'), 
+                                     only.pos = TRUE, logfc.threshold = log(1.5))
+  
+  qmarksCell = FindAllMarkers(merge(subset(microExon,tech=="cell"),subset(microInex,tech=="cell")) %>%
+                                AddMetaData(col.name = "quant", 
+                                            metadata = rep(c("exon","inex"), each=sum(microExon$tech=="cell"))) %>%
+                                SetIdent(value = "quant"),
+                              only.pos = T, logfc.threshold = log(1.5))
+  
+  qmarksNuc = FindAllMarkers(merge(subset(microExon,tech=="nucleus"),subset(microInex,tech=="nucleus")) %>%
+                                AddMetaData(col.name = "quant", 
+                                            metadata = rep(c("exon","inex"), each=sum(microExon$tech=="nucleus"))) %>%
+                                SetIdent(value = "quant"),
+                              only.pos = T, logfc.threshold = log(1.5))
+  
+  
+  microMarkersList = list(qmarksCell, qmarksNuc, markersMicroCellInexNucInex, markersMicroCellExNucInex)
+  names(microMarkersList) = c("quant_marks_cell","quant_marks_nuc","tech_marks_inex","tech_quant_marks_exon_inex")
+  readr::write_rds(microMarkersList, "data/thrupp/tech_quant_markers_list.rds")
+}
 
-markersMicroCellExNucInex = FindAllMarkers(microCellExNucInex %>% SetIdent(value= 'tech'), 
-                                   only.pos = TRUE, logfc.threshold = log(1.5))
 
 
-markersMicroCellExNucEx = FindAllMarkers(microExon %>% SetIdent(value= 'tech'), 
-                                   only.pos = TRUE, logfc.threshold = log(1.5))
+qt_marks = readr::read_rds("data/thrupp/tech_quant_markers_list.rds")
+qmarksMicroCell = qt_marks$quant_marks_cell
+qmarksMicroNuc = qt_marks$quant_marks_nuc
+markersMicroCellInexNucInex= qt_marks$tech_marks_inex
+markersMicroCellExNucInex= qt_marks$tech_quant_marks_exon_inex
 
-markersMicroCellInexNucInex = FindAllMarkers(microInex %>% SetIdent(value= 'tech'), 
-                                   only.pos = TRUE, logfc.threshold = log(1.5))
-
-qmarksCell = FindAllMarkers(merge(subset(microExon,tech=="cell"),subset(microInex,tech=="cell")) %>%
-                              AddMetaData(col.name = "quant", 
-                                          metadata = rep(c("exon","inex"), each=sum(microExon$tech=="cell"))) %>%
-                              SetIdent(value = "quant"),
-                            only.pos = T, logfc.threshold = log(1.5))
-
-qmarksNuc = FindAllMarkers(merge(subset(microExon,tech=="nucleus"),subset(microInex,tech=="nucleus")) %>%
-                              AddMetaData(col.name = "quant", 
-                                          metadata = rep(c("exon","inex"), each=sum(microExon$tech=="nucleus"))) %>%
-                              SetIdent(value = "quant"),
-                            only.pos = T, logfc.threshold = log(1.5))
-
-
-
-ggplot(data.frame(n_genes = c(with(qmarksCell, sum(p_val_adj < .05 & avg_log2FC > 1)),
-                              with(qmarksNuc, sum(p_val_adj < .05 & avg_log2FC > 1)),
+ggplot(data.frame(n_genes = c(with(qmarksMicroCell, sum(p_val_adj < .05 & avg_log2FC > 1)),
+                              with(qmarksMicroNuc, sum(p_val_adj < .05 & avg_log2FC > 1)),
                               with(markersMicroCellInexNucInex, sum(p_val_adj < .05 & avg_log2FC > 1)),
                               with(markersMicroCellExNucInex, sum(p_val_adj < .05 & avg_log2FC > 1))),
                   Test = c("Pre-processing","Pre-processing","Assay","Both"),
@@ -858,18 +902,180 @@ ggplot(data.frame(n_genes = c(with(qmarksCell, sum(p_val_adj < .05 & avg_log2FC 
   scale_fill_manual(values = c("#E41A1C",  "#984EA3", "#377EB8"))
 
 
-qdf = data.frame(n_diff = c(with(qmarksCell, sum(p_val_adj < .05 & avg_log2FC > 1)),
-                              with(qmarksNuc, sum(p_val_adj < .05 & avg_log2FC > 1)),
-                              with(markersMicroCellInexNucInex, sum(p_val_adj < .05 & avg_log2FC > 1)),
-                              with(markersMicroCellExNucInex, sum(p_val_adj < .05 & avg_log2FC > 1))),
-                  assay1 = c("Cell","Nuc", "Cell", "Cell"), assay2 = c("Cell","Nuc","Nuc","Nuc"),
-                 quant1 = c("Inex","Inex","Inex","Inex"), quant2 = c("Exon","Exon","Inex","Exon"))
+# qdf = data.frame(n_diff = c(with(qmarksCell, sum(p_val_adj < .05 & avg_log2FC > 1)),
+#                               with(qmarksNuc, sum(p_val_adj < .05 & avg_log2FC > 1)),
+#                               with(markersMicroCellInexNucInex, sum(p_val_adj < .05 & avg_log2FC > 1)),
+#                               with(markersMicroCellExNucInex, sum(p_val_adj < .05 & avg_log2FC > 1))),
+#                   assay1 = c("Cell","Nuc", "Cell", "Cell"), assay2 = c("Cell","Nuc","Nuc","Nuc"),
+#                  quant1 = c("Inex","Inex","Inex","Inex"), quant2 = c("Exon","Exon","Inex","Exon"))
 
 
 ```
 
+## Additional analyses
 
 ```{r supp_goseq}
+thrupp_genesets = readxl::read_xlsx("data/thrupp/thrupp2020supptab1.xlsx", sheet = 6)
+colnames(thrupp_genesets)[1] = "hgnc_symbol"
+dam = with(thrupp_genesets, hgnc_symbol[KerenShaul_DAM != "."])
+arm = with(thrupp_genesets, hgnc_symbol[SalaFrigerio_ARM != "."])
+
+# gene information
+hg <- biomaRt::getBM(mart = biomaRt::useMart("ENSEMBL_MART_ENSEMBL","hsapiens_gene_ensembl", host = "https://nov2020.archive.ensembl.org"),
+            attributes = c('ensembl_gene_id','external_gene_name', 'start_position',
+                                            'end_position','chromosome_name','gene_biotype'))
+hg$gene_length = with(hg, end_position- start_position +1)
+
+hg = hg %>% dplyr::select(external_gene_name, gene_length) %>% 
+  group_by(external_gene_name) %>%
+  mutate(gene_length = median(gene_length)) %>% ungroup() %>% distinct()
+
+
+# import the microglia matrices
+microExon = readr::read_rds("./data/thrupp/seurat.cellnuc.exon.rds")
+microInex = readr::read_rds("./data/thrupp/seurat.cellnuc.inex.rds")
+
+dfMicro = data.frame("hgnc_symbol" = row.names(microInex)) %>% 
+  mutate(nuc_inex_cpm = rowMeans(NormalizeData(subset(microInex,tech=="nucleus")[["RNA"]]@counts,
+                                 normalization.method="RC", scale.factor = 1E6)),
+         nuc_exon_cpm = rowMeans(NormalizeData(subset(microExon,tech=="nucleus")[["RNA"]]@counts,
+                                 normalization.method="RC", scale.factor = 1E6)),
+         cell_inex_cpm = rowMeans(NormalizeData(subset(microInex,tech=="cell")[["RNA"]]@counts,
+                                 normalization.method="RC", scale.factor = 1E6)),
+         cell_exon_cpm = rowMeans(NormalizeData(subset(microExon,tech=="cell")[["RNA"]]@counts,
+                                 normalization.method="RC", scale.factor = 1E6))) %>% 
+  left_join(hg, by=c("hgnc_symbol"="external_gene_name"))
+
+microGenesInex = unique((dfMicro %>% filter(nuc_inex_cpm > 1 & cell_inex_cpm > 1))$hgnc_symbol)
+
+markersMicroCellInexNucInex$dam = markersMicroCellInexNucInex$gene %in% dam
+with(markersMicroCellInexNucInex %>% filter(avg_log2FC > log2(1.5)), table(dam, cluster))
+with(markersMicroCellInexNucInex %>% filter(avg_log2FC > log2(2)), table(dam, cluster))
+
+
+
+qmarksMicroCell$dam = qmarksMicroCell$gene %in% dam
+with(qmarksMicroCell %>% filter(avg_log2FC > log2(1.5)), table(dam, cluster))
+with(qmarksMicroCell %>% filter(avg_log2FC > log2(2)), table(dam, cluster))
+
+
+
+
+# add "DAM" gene set to GO terms
+cats = goseq::getgo(microGenesInex, "hg38","geneSymbol")
+for(i in dam){
+  cats[[i]] = c(cats[[i]],"DAM")
+}
+
+microGenesCell = unique((dfMicro %>% filter(cell_inex_cpm > 1 & cell_exon_cpm > 1))$hgnc_symbol)
+
+DEgenes_qcell = microGenesCell %in% qmarksMicroCell$gene[qmarksMicroCell$cluster == "exon" &
+                                                                      qmarksMicroCell$avg_log2FC > log2(1.5)]
+DEgenes_qcell = as.numeric(DEgenes_qcell)
+names(DEgenes_qcell) = microGenesCell
+
+DEgenes_qcell2 = microGenesCell %in% qmarksMicroCell$gene[qmarksMicroCell$cluster == "exon" &
+                                                                      qmarksMicroCell$avg_log2FC > log2(2)]
+DEgenes_qcell2 = as.numeric(DEgenes_qcell2)
+names(DEgenes_qcell2) = microGenesCell
+
+DEgenes_nici = microGenesInex %in% markersMicroCellInexNucInex$gene[markersMicroCellInexNucInex$cluster == "cell" &
+                                                                      markersMicroCellInexNucInex$avg_log2FC > log2(1.5)]
+
+DEgenes_nici = as.numeric(DEgenes_nici)
+names(DEgenes_nici) = microGenesInex
+
+DEgenes_nici2 = microGenesInex %in% markersMicroCellInexNucInex$gene[markersMicroCellInexNucInex$cluster == "cell" &
+                                                                      markersMicroCellInexNucInex$avg_log2FC > log2(2)]
+
+DEgenes_nici2 = as.numeric(DEgenes_nici2)
+names(DEgenes_nici2) = microGenesInex
+
+
+DEgenes_nice = microGenesInex %in% markersMicroCellExNucInex$gene[markersMicroCellExNucInex$cluster == "cell" &
+                                                                      markersMicroCellExNucInex$avg_log2FC > log2(1.5)]
+
+DEgenes_nice = as.numeric(DEgenes_nice)
+names(DEgenes_nice) = microGenesInex
+
+DEgenes_nuc = microGenesInex %in% markersMicroCellInexNucInex$gene[markersMicroCellInexNucInex$cluster == "nucleus" &
+                                                                      markersMicroCellInexNucInex$avg_log2FC > log2(1.5)]
+
+DEgenes_nuc = as.numeric(DEgenes_nuc)
+names(DEgenes_nuc) = microGenesInex
+
+genlen = hg$gene_length[match(names(DEgenes_nici),hg$external_gene_name)]
+genlen2 = hg$gene_length[match(names(DEgenes_qcell),hg$external_gene_name)]
+
+
+go_nici2 = goseq::nullp(DEgenes_nici2, bias.data = log10(genlen))
+go_nici = goseq::nullp(DEgenes_nici, bias.data = log10(genlen))
+go_nice = goseq::nullp(DEgenes_nice, bias.data = log10(genlen),plot.fit = F)
+go_ceci = goseq::nullp(DEgenes_qcell, bias.data = log10(genlen2),plot.fit = F)
+go_ceci2 = goseq::nullp(DEgenes_qcell2, bias.data = log10(genlen2),plot.fit = F)
+
+
+go_nici$dam = rownames(go_nici) %in% dam
+
+ggplot(go_nici %>% mutate(bin = ntile(bias.data, n = round(nrow(go_nici)/300))) %>%
+         group_by(bin) %>% summarise(frac_de = sum(DEgenes)/300, tot_dam = sum(dam)), 
+       aes(x = bin)) + geom_point(aes(y = frac_de)) + theme_minimal()
+
+
+goseq::plotPWF(go_nici, main = "Cell-enriched genes vs length", binsize = 300)
+goseq::plotPWF(go_nice, main = "Cell-enriched genes vs length",binsize = 300)
+goseq::plotPWF(go_ceci, main = "Cell-enriched genes vs length",binsize = 300)
+
+go_cell = goseq::goseq(go_nici, gene2cat = cats, use_genes_without_cat = T)
+go_cell_unadj = goseq::goseq(go_nici, gene2cat = cats, use_genes_without_cat = T,
+                            method="Hypergeometric")
+
+go_cell2 = goseq::goseq(go_nici2, gene2cat = cats, use_genes_without_cat = T)
+go_cell2_unadj = goseq::goseq(go_nici2, gene2cat = cats, use_genes_without_cat = T,
+                            method="Hypergeometric")
+
+go_cell_ex = goseq::goseq(go_nice, gene2cat = cats, use_genes_without_cat = T)
+go_cell_ex_unadj = goseq::goseq(go_nice, gene2cat = cats, use_genes_without_cat = T,
+                            method="Hypergeometric")
+
+
+go_qcell = goseq::goseq(go_ceci, gene2cat = cats, use_genes_without_cat = T)
+go_qcell_unadj = goseq::goseq(go_ceci, gene2cat = cats, use_genes_without_cat = T,
+                              method="Hypergeometric")
+
+go_qcell2 = goseq::goseq(go_ceci2, gene2cat = cats, use_genes_without_cat = T)
+go_qcell2_unadj = goseq::goseq(go_ceci2, gene2cat = cats, use_genes_without_cat = T,
+                              method="Hypergeometric")
+
+###
+go_nuc_pwf = goseq::nullp(DEgenes_nuc, bias.data = log10(genlen),plot.fit = F)
+
+goseq::plotPWF(go_nuc_pwf, main = "Cell-enriched genes vs length")
+
+go_nuc = goseq::goseq(go_nuc_pwf, gene2cat = cats, use_genes_without_cat = T)
+go_nuc_unadj = goseq::goseq(go_nuc_pwf, gene2cat = cats, use_genes_without_cat = T,
+                            method="Hypergeometric")
+View(go_cell)
+View(go_cell_unadj)
+gc()
+
+View(go_qcell)
+View(go_qcell_unadj)
+
+
+goseq::plotPWF(go_ceci, binsize = 300, main = "Cell Exon (vs Cell Inex)")
+goseq::plotPWF(go_nici, binsize = 300, main = "Cell Inex (vs Nuc Inex)")
+
+
+# go qcell, qcell unadj, inex inex, inex inex unadj
+go_qcell$mode = "cell_exon_vs_cell_inex_goseq"
+go_qcell_unadj$mode = "cell_exon_vs_cell_inex_hypergeometric"
+go_cell$mode = "cell_inex_vs_nuc_inex_goseq"
+go_cell_unadj$mode = "cell_inex_vs_nuc_inex_hypergeometric"
+
+
+data.table::fwrite(file = "figures/submitted_GR2023/Supplemental_Table_S3.tsv",
+                   x= do.call("rbind",list(go_qcell, go_qcell_unadj,go_cell, go_cell_unadj)))
 
 
 ```
@@ -878,20 +1084,25 @@ qdf = data.frame(n_diff = c(with(qmarksCell, sum(p_val_adj < .05 & avg_log2FC > 
 
 # intron&exon has more counts than exon
 #downsample intron*exon to the same level as exon
+cellMats = read_rds("data/star/AIBS_scell_V3/all_cell_mats_5.rds")[c("exon","intron","inex")]
+nucMats = read_rds("data/star/AIBS_snuc_V3/all_nuc_mats_5.rds")[c("exon","intron","inex")]
 
 nucL5ITinex = nucMats$inex[,oriAnnot$barcode[oriAnnot$subclass_label =="L5 IT" & oriAnnot$tech=="nuclei"]]
 cellL5ITinex = cellMats$inex[,oriAnnot$barcode[oriAnnot$subclass_label =="L5 IT" & oriAnnot$tech=="cells"]]
 nucL5ITexon = nucMats$exon[,oriAnnot$barcode[oriAnnot$subclass_label =="L5 IT" & oriAnnot$tech=="nuclei"]]
 cellL5ITexon = cellMats$exon[,oriAnnot$barcode[oriAnnot$subclass_label =="L5 IT" & oriAnnot$tech=="cells"]]
-
-
+#
+#
 nucL5ITinexDS = DropletUtils::downsampleMatrix(nucL5ITinex, prop = sum(nucL5ITexon)/sum(nucL5ITinex),
                                                bycol = F)
 cellL5ITinexDS = DropletUtils::downsampleMatrix(cellL5ITinex, prop = sum(cellL5ITexon)/sum(cellL5ITinex),
                                                 bycol = F)
-
+cellL5ITinexDS2 = DropletUtils::downsampleMatrix(cellL5ITinex, prop = sum(nucL5ITinex)/sum(cellL5ITinex),
+                                                bycol = F)
+#
 dsNucExpr = rowMeans(NormalizeData(nucL5ITinexDS, normalization.method = "RC",scale.factor = 1E6))
 dsCellExpr = rowMeans(NormalizeData(cellL5ITinexDS, normalization.method = "RC",scale.factor = 1E6))
+ds2CellExpr = rowMeans(NormalizeData(cellL5ITinexDS2, normalization.method = "RC",scale.factor = 1E6))
 defNucExpr = rowMeans(NormalizeData(nucL5ITinex, normalization.method = "RC",scale.factor = 1E6))
 defCellExpr = rowMeans(NormalizeData(cellL5ITinex, normalization.method = "RC",scale.factor = 1E6))
 
@@ -899,25 +1110,35 @@ defCellExpr = rowMeans(NormalizeData(cellL5ITinex, normalization.method = "RC",s
 
 cor.test(log(dsNucExpr[dsNucExpr > 1 & dsCellExpr > 1]), log(dsCellExpr[dsNucExpr > 1 & dsCellExpr > 1]))
 
-# compare 
+cor.test(log(defNucExpr[dsNucExpr > 1 & ds2CellExpr > 1]), log(dsCellExpr[dsNucExpr > 1 & ds2CellExpr > 1]))
+
+# compare
 cor.test(log(defNucExpr[defNucExpr > 1 & defCellExpr > 1]), log(defCellExpr[defNucExpr > 1 & defCellExpr > 1]))
 
 
 # removal of Malat1 on intron fraction
-nomalInexL5IT = CreateSeuratObject(cbind(nomalCell,nomalNuc))
-nomalInexL5IT$tech = rep(c("cell","nuc"),times=c(ncol(nomalCell),ncol(nomalNuc)))
-Idents(nomalInexL5IT) = nomalInexL5IT$tech
-nomalMarks = nomalInexL5IT %>% NormalizeData() %>% FindAllMarkers(logfc.threshold = log(1.5),
-                                                                  only.pos = T)
+if(!file.exists("data/meta_brainatlas/nucL5ITmarks.noMalat1.tsv")){
+  row.names(cellL5ITinex)[31674] # Ensmusg 092341 is Malat1
+  nomalInexL5IT = CreateSeuratObject(cbind(cellL5ITinex[-31674,]
+                                           ,nucL5ITinex[-31674,]))
+  nomalInexL5IT$tech = rep(c("cell","nuc"),times=c(ncol(cellL5ITinex),ncol(nucL5ITinex)))
+  Idents(nomalInexL5IT) = nomalInexL5IT$tech
+  nomalMarks = nomalInexL5IT %>% NormalizeData() %>% FindAllMarkers(logfc.threshold = log(1.5),
+                                                                    only.pos = T)
+  
+  data.table::fwrite(nomalMarks, file="data/meta_brainatlas/nucL5ITmarks.noMalat1.tsv")
+}
+
+nomalMarks = data.table::fread("data/meta_brainatlas/nucL5ITmarks.noMalat1.tsv")
 
 # the apparent differences are not due to malat1 skewing expression of other genes downward in nuclei
 dim(nomalMarks %>% filter(p_val_adj < .05 & avg_log2FC > log(1.5))) # 2266
 dim(techMarksL5ITList$inex %>% filter(p_val_adj < .05 & avg_log2FC > log(1.5))) # 2061
 
-
+gc()
 ```
 
-
+## Figure S4
 
 ```{r celltype_bias}
 
@@ -944,7 +1165,6 @@ p_s4a = techDf %>% dplyr::select(subclass_label, cell_mean_intron, nuc_mean_intr
   left_join(celltype_glbias) %>%
   ggplot(aes(x = intron_fraction, y = R, color = tech)) + geom_point() + theme_minimal() +
   scale_color_manual(values=c("gray","orange"))
-
 techDf %>% dplyr::select(subclass_label, cell_mean_intron, nuc_mean_intron) %>%
   pivot_longer(cols = c(cell_mean_intron, nuc_mean_intron),
                values_to = "intron_fraction",
@@ -959,8 +1179,6 @@ techDf %>% dplyr::select(subclass_label, cell_mean_intron, nuc_mean_intron) %>%
 
 ```{r genelengthbias_supp}
 # is gene length bias stronger in certain cell types?
-# is goseq helpful for marker genes?
-
 
 celltype_glbias = celltype_glbias %>% left_join(markerInex %>% 
                                 filter(avg_log2FC > 1) %>%
@@ -974,7 +1192,8 @@ celltype_glbias = celltype_glbias %>% left_join(markerInex %>%
 celltype_glbias = celltype_glbias %>% dplyr::select(-tech_temp)
 
 
-celltype_glbias %>% ggplot(aes(x = R, y = median_log10_marker_length, color = tech)) + geom_point() + scale_color_manual(values=c("gray","orange")) + theme_minimal()
+celltype_glbias %>% ggplot(aes(x = R, y = median_log10_marker_length, color = tech)) + 
+  geom_point() + scale_color_manual(values=c("gray","orange")) + theme_minimal()
 
 
 
@@ -984,10 +1203,6 @@ celltype_glbias %>% ggplot(aes(x = R, y = median_log10_marker_length, color = te
 ```
 
 ```{R gene intron fraction}
-
-cellMats = read_rds("data/star/AIBS_scell_V3/all_cell_mats_5.rds")
-nucMats = read_rds("data/star/AIBS_snuc_V3/all_nuc_mats_5.rds")
-
 
 int_frac_nomalat1 = 1-colSums(cellMats$exon[-31674,])/colSums(cellMats$inex[-31674,])
 int_frac_nomalat1nuc = 1-colSums(nucMats$exon[-31674,])/colSums(nucMats$inex[-31674,])
@@ -1025,15 +1240,13 @@ t4=bcAnnot %>% filter(tech == "nuclei") %>% group_by(subclass_label) %>%
             if_perm_nuc = mean(intron_count_frac_perm))
 with(t4, cor(if_perm_nuc, if_ori))
 
-with(t4, plot(if_nomal, if_ori))
+with(t4, plot(if_perm_nuc, if_ori))
 
 
 techDfTmp = techDf
 
 
 # we just need to ask if the gene-level intron fraction varies across cell types
-
-cellMats$int_frac = 1-cellMats$exon/cellMats$inex
 
 testMat = data.frame(matrix(nrow=32589,ncol=17,data=NA))
 testMatNuc = data.frame(matrix(nrow=32589,ncol=17,data=NA))
@@ -1061,7 +1274,7 @@ testMat %>% pivot_longer(values_to = "int_frac", names_to = "subclass_label",col
   filter(!is.na(int_frac)) %>% filter(int_frac >= 0 & int_frac <= 1) %>%
   ggplot(aes(x = int_frac, y = reorder(subclass_label,int_frac,FUN=median))) + geom_boxplot()
 
-# FIGURE
+# Figure S4B
 p_s4b = rbind(testMat %>% pivot_longer(values_to = "int_frac", names_to = "subclass_label",cols = colnames(testMat)[c(-18)]) %>%
   filter(!is.na(int_frac)) %>% filter(int_frac >= 0 & int_frac <= 1) %>%
   group_by(subclass_label) %>% summarise(median_GIF = median(int_frac),
@@ -1100,24 +1313,25 @@ with(testMat %>% pivot_longer(values_to = "int_frac", names_to = "subclass_label
 
 
 
-
-
-
 ```{r}
-# do goseq on the marker genes and  show that it reduces the gene length effect
-
-
+# do goseq on the marker genes and show that it reduces the gene length effect
 
 if(!(file.exists("data/meta_brainatlas/markers_goseq.rds"))){
   go_df = setNames(data.frame(matrix(ncol = 9,nrow=0)),c(colnames(GO.inex),"subclass","tech"))
-go_df_unadj = go_df
+  go_df_unadj = go_df
 
   for(ct in unique(markerInex$cluster)){ # this should be an apply function
   nuc_degs = aibs$ensembl_gene_id %in% (markerInex %>% filter(cluster == ct, tech == "nuc"))$gene
   names(nuc_degs) = aibs$ensembl_gene_id
 
-  nuc_degs = nuc_degs[aibs$ensembl_gene_id[aibs$inex_cpm.nuc > 5]] # half the minimum detection rate
-
+  
+  ct_underscore = gsub(" ","_",ct)
+  
+  nuc_ct_cpm = ctExprList$inex[paste0(ct_underscore,"_nuc")]
+  cell_ct_cpm = ctExprList$inex[paste0(ct_underscore,"_cell")]
+  
+  nuc_degs = nuc_degs[aibs$ensembl_gene_id[nuc_ct_cpm > 5]] # 
+  
   nuc_pwf = goseq::nullp(DEgenes = nuc_degs,
                      bias.data = log10(aibs$gene_length[match(names(nuc_degs),aibs$ensembl_gene_id)]))
 
@@ -1130,7 +1344,7 @@ go_df_unadj = go_df
   cell_degs = aibs$ensembl_gene_id %in% (markerInex %>% filter(cluster == ct, tech == "cell"))$gene
   names(cell_degs) = aibs$ensembl_gene_id
 
-  cell_degs = cell_degs[aibs$ensembl_gene_id[aibs$inex_cpm.cell > 5]] # half the minimum detection rate
+  cell_degs = cell_degs[aibs$ensembl_gene_id[cell_ct_cpm > 5]] # half the minimum detection rate
 
   cell_pwf = goseq::nullp(DEgenes = cell_degs,
                      bias.data = log10(aibs$gene_length[match(names(cell_degs),aibs$ensembl_gene_id)]))
@@ -1145,11 +1359,12 @@ go_df_unadj = go_df
 
   }
 write_rds(go_df,file="data/meta_brainatlas/markers_goseq.rds")
+write_rds(go_df_unadj,file="data/meta_brainatlas/markers_goseq_unadj.rds")
+
 }
 
-
 go_df = read_rds("data/meta_brainatlas/markers_goseq.rds")
-
+go_df_unadj = read_rds("data/meta_brainatlas/markers_goseq_unadj.rds")
 
 goterms = goseq::getgo(geneAnnot$ensembl_gene_id,"mm10","ensGene")
 goterms_df = stack(goterms)
@@ -1159,13 +1374,13 @@ goterms_df = goterms_df %>% left_join(geneAnnot %>% dplyr::select(ensembl_gene_i
 goterms_mean_length = goterms_df %>% group_by(category) %>% summarise(mgl = mean(log10(gene_length)))
 
 
-go_df %>% left_join(goterms_mean_length) %>% filter(subclass == "Astro") %>%
+go_df %>% left_join(goterms_mean_length) %>% filter(subclass == "Oligo") %>%
   ggplot(aes(x = mgl, y = -log10(over_represented_pvalue))) +
   geom_point() + facet_wrap(~tech)
 
 
 go_df_unadj %>% left_join(goterms_mean_length) %>%
-  filter(subclass == "Astro") %>% ggplot(aes(x = mgl, y = -log10(over_represented_pvalue))) +
+  filter(subclass == "Oligo") %>% ggplot(aes(x = mgl, y = -log10(over_represented_pvalue))) +
   geom_point() + facet_wrap(~tech)
 
 
@@ -1188,5 +1403,12 @@ testRanks %>% left_join(goterms_mean_length) %>%
 with(testRanks %>% left_join(goterms_mean_length), cor.test(mgl, adj_rank-unadj_rank))
 
 
-```
+go_df$mode = "goseq"
+go_df_unadj$mode = "hypergeometric"
 
+table_s2 = rbind(go_df, go_df_unadj)
+
+data.table::fwrite(table_s2 %>% group_by(subclass,tech,mode) %>% slice_min(over_represented_pvalue,n=100), "figures/submitted_GR2023/Supplemental_Table_S2.tsv")
+
+
+```
